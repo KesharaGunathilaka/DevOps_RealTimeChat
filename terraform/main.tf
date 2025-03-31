@@ -71,5 +71,5 @@ resource "aws_security_group" "real_chat_sg" {
 }
 
 output "instance_public_ip" {
-  value = aws_instance.real_chat_server.public_ip
+  value = aws_instance.real_chat.public_ip
 }
