@@ -1,6 +1,9 @@
 provider "aws" {
+  access_key = var.AWS_ACCESS_KEY
+  secret_key = var.AWS_SECRET_KEY
   region = "eu-north-1"
 }
+
 
 resource "aws_instance" "real_chat" {
   ami           = "ami-09a9858973b288bdd" 
