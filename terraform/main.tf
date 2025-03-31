@@ -6,11 +6,7 @@ provider "aws" {
 resource "aws_instance" "real_chat" {
   ami           = "ami-09a9858973b288bdd" 
   instance_type = "t3.micro"
-  key_name = data.aws_key_pair.existing_key.key_name
-
-  data "aws_key_pair" "existing_key" {
-  key_name = "real_chat"
-  }
+  key_name      = "key1"
 
   vpc_security_group_ids = [aws_security_group.real_chat_sg.id]
 
