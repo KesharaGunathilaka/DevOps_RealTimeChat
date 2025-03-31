@@ -1,9 +1,9 @@
 provider "aws" {
-  region = "eu-north-1a"
+  region = "eu-north-1"
 }
 
 resource "aws_instance" "real_chat" {
-  ami           = "ami-09a9858973b288bdd" # Ensure this AMI exists in your region
+  ami           = "ami-09a9858973b288bdd" 
   instance_type = "t3.micro"
   key_name      = "real_chat"
 
