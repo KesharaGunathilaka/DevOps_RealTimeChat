@@ -1,22 +1,27 @@
-- hosts: ec2
+- name: Install Docker and Deploy Application
+  hosts: ec2
   become: yes
   tasks:
-    - name: Pull Backend Docker Image
-      shell: docker pull kesharagunathilaka/backend:latest
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: yes
 
-    - name: Pull Frontend Docker Image
-      shell: docker pull kesharagunathilaka/frontend:latest
+    - name: Start Docker Service
+      service:
+        name: docker
+        state: started
+        enabled: yes
 
-    - name: Stop running backend container
-      shell: docker stop backend || true && docker rm backend || true
-      ignore_errors: yes
+    - name: Pull Backend Image
+      command: docker pull kesharagunathilaka/backend:latest
 
-    - name: Stop running frontend container
-      shell: docker stop frontend || true && docker rm frontend || true
-      ignore_errors: yes
+    - name: Pull Frontend Image
+      command: docker pull kesharagunathilaka/frontend:latest
 
     - name: Run Backend Container
-      shell: docker run -d -p 5000:5000 --name backend kesharagunathilaka/backend:latest
+      command: docker run -d --name backend -p 5000:5000 kesharagunathilaka/backend:latest
 
     - name: Run Frontend Container
-      shell: docker run -d -p 5173:5173 --name frontend kesharagunathilaka/frontend:latest
+      command: docker run -d --name frontend -p 3000:3000 --env BACKEND_URL=http://{{ ansible_default_ipv4.address }}:5000 kesharagunathilaka/frontend:latest
