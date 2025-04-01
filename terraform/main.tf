@@ -7,6 +7,7 @@ resource "aws_instance" "real_chat" {
   ami           = "ami-09a9858973b288bdd" 
   instance_type = "t3.micro"
   key_name      = "key1"
+  associate_public_ip_address = true
 
   vpc_security_group_ids = [aws_security_group.real_chat_sg.id]
 
@@ -72,4 +73,5 @@ resource "aws_security_group" "real_chat_sg" {
 
 output "instance_public_ip" {
   value = aws_instance.real_chat.public_ip
+  description = "Public IP of the EC2 instance"
 }
