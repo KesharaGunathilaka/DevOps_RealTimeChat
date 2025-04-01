@@ -1,16 +1,49 @@
-- hosts: ec2
+---
+- name: Setup Docker on EC2
+  hosts: ec2
   become: yes
   tasks:
-    - name: Update package lists
+    - name: Update apt packages
       apt:
         update_cache: yes
-
+        
+    - name: Install required packages
+      apt:
+        name:
+          - apt-transport-https
+          - ca-certificates
+          - curl
+          - software-properties-common
+        state: present
+        
+    - name: Add Docker GPG key
+      apt_key:
+        url: https://download.docker.com/linux/ubuntu/gpg
+        state: present
+        
+    - name: Add Docker repository
+      apt_repository:
+        repo: deb [arch=amd64] https://download.docker.com/linux/ubuntu focal stable
+        state: present
+        
     - name: Install Docker
       apt:
-        name: docker.io
+        name: docker-ce
         state: present
-
-    - name: Start Docker Service
+        
+    - name: Install Docker Compose
+      get_url:
+        url: https://github.com/docker/compose/releases/download/v2.18.1/docker-compose-linux-x86_64
+        dest: /usr/local/bin/docker-compose
+        mode: '0755'
+        
+    - name: Add ubuntu user to docker group
+      user:
+        name: ubuntu
+        groups: docker
+        append: yes
+        
+    - name: Start and enable Docker service
       service:
         name: docker
         state: started
