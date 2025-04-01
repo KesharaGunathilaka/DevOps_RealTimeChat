@@ -15,7 +15,7 @@ dotenv.config();
 
 const PORT = process.env.PORT;
 const __dirname = path.resolve();
-const Origin = "http://13.61.12.132:5173/";
+const Origin = "http://13.61.12.132:5173";
 
 app.use(express.json());
 app.use(cookieParser());
