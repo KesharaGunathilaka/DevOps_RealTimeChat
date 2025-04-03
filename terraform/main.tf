@@ -15,6 +15,8 @@ resource "aws_instance" "real_chat" {
     Name = "real_chat-Server"
   }
 
+}
+
 resource "aws_security_group" "real_chat_sg" {
   name        = "real_chat-security-group"
   description = "Allow SSH, HTTP, and custom ports"
