@@ -15,15 +15,6 @@ resource "aws_instance" "real_chat" {
     Name = "real_chat-Server"
   }
 
-  user_data = <<-EOF
-              #!/bin/bash
-              apt-get update -y
-              apt-get install -y docker docker-compose
-              systemctl start docker
-              systemctl enable docker
-              EOF
-}
-
 resource "aws_security_group" "real_chat_sg" {
   name        = "real_chat-security-group"
   description = "Allow SSH, HTTP, and custom ports"
