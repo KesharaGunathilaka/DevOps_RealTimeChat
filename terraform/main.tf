@@ -14,7 +14,6 @@ resource "aws_instance" "real_chat" {
   tags = {
     Name = "real_chat-Server"
   }
-
 }
 
 resource "aws_security_group" "real_chat_sg" {
