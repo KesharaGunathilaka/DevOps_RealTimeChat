@@ -44,5 +44,10 @@ pipeline {
                 }
             }
         }
+        stage('Validate Ansible Inventory') {
+    steps {
+        bat 'ansible -i inventory.ini all --connection=ssh -m ping'
+    }
+}
     }
 }
