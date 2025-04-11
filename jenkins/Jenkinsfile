@@ -44,10 +44,18 @@ pipeline {
                 }
             }
         }
-        stage('Validate Ansible Inventory') {
-    steps {
-        bat 'ansible -i inventory.ini all --connection=ssh -m ping'
-    }
-}
+        stage('Run Ansible Playbook') {
+            steps {
+                script {
+                    def playbookPath = 'ansible/playbook.yml'
+                    def inventoryPath = 'inventory.ini'
+
+                    // Run Ansible via WSL (Assumes Ansible is set up in Ubuntu WSL)
+                    bat """
+                    wsl ansible-playbook /mnt/c/Users/YourUsername/path/to/${playbookPath.replace('\\', '/')} -i /mnt/c/Users/YourUsername/path/to/${inventoryPath.replace('\\', '/')}
+                    """
+                }
+            }
+        }
     }
 }
