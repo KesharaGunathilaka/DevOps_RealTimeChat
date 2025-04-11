@@ -1,0 +1,27 @@
+- name: Setup Docker and run app on EC2
+  hosts: ec2
+  become: true
+  tasks:
+    - name: Install Docker
+      apt:
+        name: docker.io
+        state: present
+        update_cache: true
+
+    - name: Ensure Docker service is running
+      service:
+        name: docker
+        state: started
+        enabled: true
+
+    - name: Pull backend image
+      shell: docker pull kesharagunathilaka/backend:latest
+
+    - name: Pull frontend image
+      shell: docker pull kesharagunathilaka/frontend:latest
+
+    - name: Run backend container
+      shell: docker run -d --name backend -p 5000:5000 kesharagunathilaka/backend:latest
+
+    - name: Run frontend container
+      shell: docker run -d --name frontend -p 5173:5173 kesharagunathilaka/frontend:latest
