@@ -40,20 +40,16 @@ pipeline {
             echo "EC2 Public IP: ${env.EC2_IP}"
 
             // Write inventory file for Ansible
-            writeFile file: 'inventory.ini', text: "[ec2]\n${env.EC2_IP} ansible_user=ubuntu ansible_ssh_private_key_file=C:/ProgramData/Jenkins/.jenkins/workspace/real-time-chat/aws/key1.pem"
+            writeFile file: 'inventory.ini', text: "[ec2]\n${env.EC2_IP} ansible_user=ubuntu ansible_ssh_private_key_file=C:/ProgramData/Jenkins/.jenkins/workspace/real-time-chat/ansible/key1.pem"
                 }
             }
         }
-        stage('Run Ansible Playbook') {
+        stage('Run Ansible in Docker') {
             steps {
-                script {
-                    def playbookPath = 'ansible/playbook.yml'
-                    def inventoryPath = 'inventory.ini'
-
-                    // Run Ansible via WSL (Assumes Ansible is set up in Ubuntu WSL)
-                    bat """
-                    wsl ansible-playbook /mnt/c/Users/YourUsername/path/to/${playbookPath.replace('\\', '/')} -i /mnt/c/Users/YourUsername/path/to/${inventoryPath.replace('\\', '/')}
-                    """
+        script {
+            bat """
+            docker run --rm -v %cd%:/ansible -w /ansible williamyeh/ansible:alpine3 ansible-playbook ansible/playbook.yml -i inventory.ini
+            """
                 }
             }
         }
