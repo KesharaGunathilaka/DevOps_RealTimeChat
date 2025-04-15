@@ -47,7 +47,7 @@ pipeline {
         stage('Run Ansible in Docker') {
             steps {
         script {
-            // Run Ansible playbook in Docker container
+            // Run Ansible playbook in import Docker and run container 
             bat """
             docker run --rm -v %cd%:/ansible -w /ansible williamyeh/ansible:alpine3 ansible-playbook ansible/playbook.yml -i inventory.ini
             """
