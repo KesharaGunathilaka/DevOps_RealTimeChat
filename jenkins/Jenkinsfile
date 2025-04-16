@@ -40,6 +40,7 @@ pipeline {
             echo "EC2 Public IP: ${env.EC2_IP}"
 
             // Write inventory file for Ansible
+            //check this inventory file
             writeFile file: 'inventory.ini', text: "[ec2]\n${env.EC2_IP} ansible_user=ubuntu ansible_ssh_private_key_file=C:/ProgramData/Jenkins/.jenkins/workspace/real-time-chat/ansible/key1.pem"
                 }
             }
