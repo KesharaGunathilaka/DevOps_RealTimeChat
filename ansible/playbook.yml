@@ -1,3 +1,4 @@
+#check inventory
 - name: Setup Docker and run app on EC2
   hosts: ec2
   become: true
