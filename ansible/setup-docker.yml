@@ -1,4 +1,5 @@
-- hosts: "{{ target_host }}"  # Dynamic host from Jenkins
+#check inventory
+- hosts: "{{ target_host }}" # Dynamic host from Jenkins
   become: yes
   tasks:
     - name: Install Docker
