@@ -196,7 +196,7 @@
         <rect class="pulse" x="556" y="208" width="144" height="56" rx="10" stroke="var(--terraform)" style="transform-origin:628px 236px"/>
         <rect class="box" x="556" y="208" width="144" height="56" rx="10" stroke="var(--terraform)"/>
         <text class="snum"   x="568" y="226">4</text>
-        <text class="nlabel" x="628" y="238" text-anchor="middle">Provision EC2</text>
+        <text class="nlabel" x="628" y="238" text-anchor="middle">Provision Infra</text>
         <text class="nsub"   x="628" y="254" text-anchor="middle">terraform apply</text>
       </g>
 
@@ -204,8 +204,8 @@
         <rect class="pulse" x="372" y="208" width="112" height="56" rx="10" stroke="var(--terraform)" style="transform-origin:428px 236px"/>
         <rect class="box" x="372" y="208" width="112" height="56" rx="10" stroke="var(--terraform)"/>
         <text class="snum"   x="384" y="226">5</text>
-        <text class="nlabel" x="428" y="238" text-anchor="middle">Fetch IP</text>
-        <text class="nsub"   x="428" y="254" text-anchor="middle">write inventory</text>
+        <text class="nlabel" x="428" y="238" text-anchor="middle">Fetch Address</text>
+        <text class="nsub"   x="428" y="254" text-anchor="middle">terraform output</text>
       </g>
 
       <g class="node" id="p-s6">
@@ -226,17 +226,17 @@
       <g class="node" id="p-ec2">
         <rect class="pulse" x="828" y="196" width="152" height="152" rx="12" stroke="var(--aws)" style="transform-origin:904px 272px"/>
         <rect class="box" x="828" y="196" width="152" height="152" rx="12" stroke="var(--aws)"/>
-        <text class="ztitle" x="904" y="220" text-anchor="middle">AWS EC2 · t3.micro</text>
-        <rect class="box" x="848" y="234" width="112" height="42" rx="8" stroke="var(--node)"/>
-        <text class="nlabel" x="904" y="252" text-anchor="middle">backend</text>
-        <text class="nsub"   x="904" y="266" text-anchor="middle">:5000</text>
-        <rect class="box" x="848" y="288" width="112" height="42" rx="8" stroke="var(--react)"/>
-        <text class="nlabel" x="904" y="306" text-anchor="middle">frontend</text>
-        <text class="nsub"   x="904" y="320" text-anchor="middle">:5173</text>
+        <text class="ztitle" x="904" y="220" text-anchor="middle">EC2 or stand-in</text>
+        <rect class="box" x="848" y="234" width="112" height="42" rx="8" stroke="var(--react)"/>
+        <text class="nlabel" x="904" y="252" text-anchor="middle">nginx</text>
+        <text class="nsub"   x="904" y="266" text-anchor="middle">:80 · app + proxy</text>
+        <rect class="box" x="848" y="288" width="112" height="42" rx="8" stroke="var(--node)"/>
+        <text class="nlabel" x="904" y="306" text-anchor="middle">API · MongoDB</text>
+        <text class="nsub"   x="904" y="320" text-anchor="middle">compose stack</text>
       </g>
 
-      <text class="elabel" x="500" y="230" text-anchor="end">public IP</text>
-      <text class="elabel" x="560" y="356" text-anchor="middle">SSH · install Docker · docker run</text>
+      <text class="elabel" x="500" y="230" text-anchor="end">address</text>
+      <text class="elabel" x="560" y="356" text-anchor="middle">SSH · install Docker · compose up</text>
       <text class="elabel" x="766" y="54"  text-anchor="middle">push</text>
       <text class="elabel" x="1012" y="212" text-anchor="middle" transform="rotate(90 1012 212)">pull</text>
 
@@ -252,7 +252,7 @@
       </defs>
 
       <rect class="zone" x="352" y="40" width="336" height="288" rx="12"/>
-      <text class="ztitle" x="368" y="62">NODE.JS CONTAINER · :5000</text>
+      <text class="ztitle" x="368" y="62">API CONTAINER · BEHIND NGINX</text>
 
       <path class="edge" id="r-e1" d="M188,140 H352"           marker-end="url(#ah2)"/>
       <path class="edge" id="r-e2" d="M520,176 V216"           marker-end="url(#ah2)"/>
@@ -303,8 +303,8 @@
       <g class="node" id="r-mongo">
         <rect class="pulse" x="772" y="212" width="152" height="56" rx="10" stroke="var(--mongo)" style="transform-origin:848px 240px"/>
         <rect class="box" x="772" y="212" width="152" height="56" rx="10" stroke="var(--mongo)"/>
-        <text class="nlabel" x="848" y="236" text-anchor="middle">MongoDB Atlas</text>
-        <text class="nsub"   x="848" y="252" text-anchor="middle">messages collection</text>
+        <text class="nlabel" x="848" y="236" text-anchor="middle">MongoDB 7</text>
+        <text class="nsub"   x="848" y="252" text-anchor="middle">container · messages</text>
       </g>
 
       <g class="node" id="r-cloud">
@@ -314,7 +314,7 @@
         <text class="nsub"   x="848" y="152" text-anchor="middle">image upload → URL</text>
       </g>
 
-      <text class="elabel" x="270" y="132" text-anchor="middle">REST · jwt cookie</text>
+      <text class="elabel" x="270" y="132" text-anchor="middle">REST via nginx · cookie</text>
       <text class="elabel" x="270" y="292" text-anchor="middle">WebSocket push</text>
       <text class="elabel" x="684" y="232" text-anchor="middle">persist</text>
       <text class="elabel" x="684" y="132" text-anchor="middle">if image</text>
@@ -352,25 +352,25 @@
      d:"A push to GitHub triggers the Jenkins job. The pipeline checks out the repository onto the build agent."},
     {nodes:["p-s1","p-s2"],        flows:["f2"], path:"e2",
      t:"Stage 2 — Build Docker Images",
-     d:"Both tiers are built from their own Dockerfiles: a Node.js API image and a React web image. The build is the same whether it ends up on a laptop or on EC2."},
+     d:"Two images are built: the Node.js API, and an nginx image that serves the compiled React app and proxies the API. Neither contains an address or a secret, so the same images run anywhere."},
     {nodes:["p-s2","p-s3","p-hub"],flows:["f3","f7"], path:"e3",
      t:"Stage 3 — Push to Docker Hub",
      d:"Images are tagged and pushed to Docker Hub. The registry login uses a Jenkins credential binding — no password appears in the Jenkinsfile."},
     {nodes:["p-s4","p-ec2"],       flows:["f4"], path:"e4",
-     t:"Stage 4 — Provision AWS EC2",
-     d:"terraform apply creates a t3.micro instance and a security group opening ports 22, 80, 443, 5000 and 5173. This server did not exist when the build started."},
+     t:"Stage 4 — Provision Infrastructure",
+     d:"terraform apply creates a fresh Ubuntu 24.04 server (an EC2 t3.micro, or a free local stand-in when DEPLOY_TARGET=local) plus the SSH key to reach it and the Ansible inventory. This server did not exist when the build started."},
     {nodes:["p-s4","p-s5"],        flows:["f5"], path:"e5",
-     t:"Stage 5 — Fetch IP, Write Inventory",
-     d:"The public IP Terraform just created is captured from its output and written into an Ansible inventory at runtime. This is the handoff: two tools that know nothing about each other, bridged by the pipeline."},
+     t:"Stage 5 — Fetch Server Address",
+     d:"The address is read from Terraform's output. In 2025 this capture included the echoed command line: Ansible matched no hosts, and the build went green having deployed nothing. One character fixed it."},
     {nodes:["p-s6","p-ec2","p-hub"],flows:["f6","f8"], path:"e6",
      t:"Stage 6 — Configure & Deploy",
-     d:"Ansible runs inside its own container, connects over SSH, installs Docker, pulls both images from the registry and starts them. Infrastructure created minutes ago is now serving the app."}
+     d:"Ansible runs in its own container, connects over SSH, installs Docker, writes the secrets and runs docker compose up: nginx, the API and MongoDB. The build only goes green once /api/health answers from outside the server."}
   ];
 
   var RUN = [
     {nodes:["r-alice","r-api"],  flows:["r-f1"], path:"r-e1",
      t:"1 — Alice sends a message",
-     d:"The browser POSTs to /api/chat/send/:id over REST, carrying the JWT in an httpOnly cookie. protectRoute verifies it and loads the user before anything else runs."},
+     d:"The browser POSTs to /api/chat/send/:id, carrying the JWT in an httpOnly cookie. nginx proxies it to the API container, where protectRoute verifies the token and loads the user before anything else runs."},
     {nodes:["r-api","r-cloud"],  flows:["r-f4"], path:"r-e4",
      t:"2 — Image upload (optional)",
      d:"If the message has an attachment, the base64 payload goes to Cloudinary and only the returned URL is kept. The app server never stores the file."},
@@ -382,7 +382,7 @@
      d:"userSocketMap maps user IDs to live socket IDs. If Bob has no entry, he is offline and the message simply waits in the database until he opens the conversation."},
     {nodes:["r-io","r-bob"],     flows:["r-f6"], path:"r-e6",
      t:"5 — Push over WebSocket",
-     d:"The message is emitted to Bob's socket specifically — not broadcast to everyone. He receives it without having made a request. Two transports, one user action."}
+     d:"The message is emitted to Bob's socket specifically, not broadcast. That socket runs through nginx, which upgraded it to a WebSocket. Bob receives the message without making a request: two transports, one user action."}
   ];
 
   var svgPipe = document.getElementById("svg-pipe");

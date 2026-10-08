@@ -1,28 +1,153 @@
-#check inventory
-- name: Setup Docker and run app on EC2
+# Configures a freshly provisioned EC2 instance and deploys UniChat on it.
+#
+# Inventory : inventory_generated.ini, written by terraform/aws or terraform/local
+# Secrets   : read from the controller's environment (Jenkins credentials),
+#             never stored in this repository. JWT_SECRET is optional: if it is
+#             not supplied, one is generated on the server and kept there.
+- name: Deploy UniChat to EC2
   hosts: ec2
   become: true
+  gather_facts: false
+
+  vars:
+    app_dir: /opt/unichat
+    dockerhub_user: "{{ lookup('env', 'DOCKERHUB_USER') | default('kesharagunathilaka', true) }}"
+    # Per-host settings come from the generated inventory and are read with
+    # defaults below rather than declared here: play vars outrank inventory
+    # vars, so declaring them here would silently override the inventory.
+    #   app_origin   - URL the browser uses       (default http://<host>)
+    #   manage_swap  - add a swap file            (default true)
+    #   compose_pull - "always" deploys the newest images from Docker Hub;
+    #                  "never" deploys images already on the host
+
   tasks:
-    - name: Install Docker
-      apt:
-        name: docker.io
+    - name: Warn if Cloudinary credentials are missing
+      ansible.builtin.debug:
+        msg: "CLOUDINARY_* not set: the app will run, but image uploads will fail."
+      when: lookup('env', 'CLOUDINARY_API_SECRET') | length == 0
+      run_once: true
+
+    # The instance was created moments ago by Terraform; sshd may not be up yet.
+    - name: Wait for SSH on the new instance
+      ansible.builtin.wait_for_connection:
+        timeout: 300
+
+    - name: Gather facts
+      ansible.builtin.setup:
+
+    # On a fresh EC2 boot cloud-init runs apt itself and holds the dpkg lock.
+    - name: Check for cloud-init
+      ansible.builtin.stat:
+        path: /usr/bin/cloud-init
+      register: cloud_init
+
+    - name: Wait for cloud-init to finish
+      ansible.builtin.command: cloud-init status --wait
+      changed_when: false
+      when: cloud_init.stat.exists
+
+    - name: Install Docker and the Compose plugin
+      ansible.builtin.apt:
+        name:
+          - docker.io
+          - docker-compose-v2
         state: present
         update_cache: true
+        lock_timeout: 300
 
-    - name: Ensure Docker service is running
-      service:
+    - name: Ensure Docker is running and starts on boot
+      ansible.builtin.service:
         name: docker
         state: started
         enabled: true
 
-    - name: Pull backend image
-      shell: docker pull kesharagunathilaka/backend:latest
+    # A t3.micro has 1 GB of RAM; swap keeps MongoDB + Node + nginx from being OOM-killed.
+    - name: Create a 1 GB swap file
+      ansible.builtin.command: fallocate -l 1G /swapfile
+      args:
+        creates: /swapfile
+      register: swapfile
+      when: manage_swap | default(true) | bool
 
-    - name: Pull frontend image
-      shell: docker pull kesharagunathilaka/frontend:latest
+    - name: Enable swap
+      ansible.builtin.shell: chmod 600 /swapfile && mkswap /swapfile && swapon /swapfile
+      when: manage_swap | default(true) | bool and swapfile.changed
 
-    - name: Run backend container
-      shell: docker run -d --name backend -p 5000:5000 kesharagunathilaka/backend:latest
+    - name: Persist swap across reboots
+      ansible.builtin.lineinfile:
+        path: /etc/fstab
+        line: /swapfile none swap sw 0 0
+      when: manage_swap | default(true) | bool
 
-    - name: Run frontend container
-      shell: docker run -d --name frontend -p 5173:5173 kesharagunathilaka/frontend:latest
+    - name: Create the app directory
+      ansible.builtin.file:
+        path: "{{ app_dir }}"
+        state: directory
+        mode: "0750"
+
+    - name: Copy the production Compose file
+      ansible.builtin.copy:
+        src: "{{ playbook_dir }}/../docker-compose.prod.yml"
+        dest: "{{ app_dir }}/docker-compose.yml"
+        mode: "0640"
+
+    # Prefer the secret from Jenkins; otherwise reuse the one generated on an
+    # earlier run, so redeploys do not log every user out.
+    - name: Read a previously generated JWT secret
+      ansible.builtin.slurp:
+        src: "{{ app_dir }}/.jwt_secret"
+      register: saved_jwt
+      failed_when: false
+      no_log: true
+
+    - name: Choose the JWT secret
+      ansible.builtin.set_fact:
+        jwt_secret: >-
+          {{ lookup('env', 'JWT_SECRET')
+             or (saved_jwt.content | default('') | b64decode | trim)
+             or lookup('ansible.builtin.password', '/dev/null', length=48, chars=['ascii_letters', 'digits']) }}
+      no_log: true
+
+    - name: Keep the JWT secret on the server
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.jwt_secret"
+        content: "{{ jwt_secret }}"
+        mode: "0600"
+      no_log: true
+
+    - name: Write the environment file
+      ansible.builtin.copy:
+        dest: "{{ app_dir }}/.env"
+        mode: "0600"
+        content: |
+          DOCKERHUB_USER={{ dockerhub_user }}
+          NODE_ENV=production
+          COOKIE_SECURE=false
+          ORIGIN={{ app_origin | default('http://' ~ inventory_hostname) }}
+          JWT_SECRET={{ jwt_secret }}
+          CLOUDINARY_CLOUD_NAME={{ lookup('env', 'CLOUDINARY_CLOUD_NAME') }}
+          CLOUDINARY_API_KEY={{ lookup('env', 'CLOUDINARY_API_KEY') }}
+          CLOUDINARY_API_SECRET={{ lookup('env', 'CLOUDINARY_API_SECRET') }}
+      no_log: true
+
+    # Idempotent: re-running replaces containers with the latest images
+    # instead of failing on "container name already in use".
+    - name: Pull the latest images and start the stack
+      ansible.builtin.command: >
+        docker compose up -d --pull {{ compose_pull | default('always') }} --remove-orphans --wait --wait-timeout 300
+      args:
+        chdir: "{{ app_dir }}"
+      changed_when: true
+
+    - name: Smoke test through nginx
+      ansible.builtin.uri:
+        url: http://localhost/api/health
+        status_code: 200
+      register: health
+      retries: 20
+      delay: 5
+      until: health.status == 200
+
+    - name: Report the app URL
+      ansible.builtin.debug:
+        msg: "UniChat is live at {{ app_origin | default('http://' ~ inventory_hostname) }}"

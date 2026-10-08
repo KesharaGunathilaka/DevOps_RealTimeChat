@@ -1,0 +1,48 @@
+# Production stack, deployed to EC2 by ansible/playbook.yml.
+# Images come from Docker Hub; secrets come from the .env file Ansible writes
+# next to this file on the server.
+name: unichat
+
+services:
+  mongo:
+    image: mongo:7
+    # Cap MongoDB's cache: the default (half of RAM) is too greedy on a 1 GB t3.micro.
+    command: ["--wiredTigerCacheSizeGB", "0.25"]
+    volumes:
+      - mongo-data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.runCommand({ ping: 1 }).ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+    restart: unless-stopped
+
+  backend:
+    image: ${DOCKERHUB_USER:-kesharagunathilaka}/backend:latest
+    env_file: .env
+    environment:
+      MONGO: mongodb://mongo:27017/realtimechat
+      PORT: "5000"
+    depends_on:
+      mongo:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:5000/api/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 15s
+    restart: unless-stopped
+
+  frontend:
+    image: ${DOCKERHUB_USER:-kesharagunathilaka}/frontend:latest
+    ports:
+      - "80:80"
+    depends_on:
+      backend:
+        condition: service_healthy
+    restart: unless-stopped
+
+volumes:
+  mongo-data:
