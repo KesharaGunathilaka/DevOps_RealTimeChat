@@ -1,0 +1,512 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Real-Time Chat — Architecture</title>
+<style>
+  :root{
+    --bg:#f7f9fc; --panel:#ffffff; --ink:#1c2430; --muted:#5d6b7f;
+    --line:#c9d4e2; --grid:#e8eef6;
+    --jenkins:#d24939; --docker:#2496ed; --terraform:#844fba;
+    --ansible:#cc0000; --aws:#e08700; --node:#3f9142; --react:#2196c4;
+    --mongo:#2e7d32; --cloud:#e0820b; --accent:#0969da;
+    --shadow:0 1px 3px rgba(20,35,60,.10),0 6px 18px rgba(20,35,60,.07);
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --bg:#0e1420; --panel:#161e2c; --ink:#e6edf6; --muted:#93a3ba;
+      --line:#2c3a4d; --grid:#1c2636;
+      --jenkins:#f0685a; --docker:#5cb3f5; --terraform:#a97ce0;
+      --ansible:#ff5c5c; --aws:#ffb64d; --node:#63c96a; --react:#5cc8e8;
+      --mongo:#5cc264; --cloud:#ffb64d; --accent:#58a6ff;
+      --shadow:0 1px 3px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.3);
+    }
+  }
+  :root[data-theme="dark"]{
+    --bg:#0e1420; --panel:#161e2c; --ink:#e6edf6; --muted:#93a3ba;
+    --line:#2c3a4d; --grid:#1c2636;
+    --jenkins:#f0685a; --docker:#5cb3f5; --terraform:#a97ce0;
+    --ansible:#ff5c5c; --aws:#ffb64d; --node:#63c96a; --react:#5cc8e8;
+    --mongo:#5cc264; --cloud:#ffb64d; --accent:#58a6ff;
+    --shadow:0 1px 3px rgba(0,0,0,.4),0 6px 20px rgba(0,0,0,.3);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--bg); color:var(--ink);
+    font:15px/1.55 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+    padding:28px 20px 56px;
+  }
+  .wrap{max-width:1120px;margin:0 auto}
+  header{margin-bottom:22px}
+  h1{font-size:1.45rem;margin:0 0 6px;letter-spacing:-.01em}
+  .sub{color:var(--muted);margin:0;max-width:70ch}
+
+  .bar{
+    display:flex;gap:10px;flex-wrap:wrap;align-items:center;
+    margin:20px 0 14px;padding:10px 12px;
+    background:var(--panel);border:1px solid var(--line);border-radius:10px;
+    box-shadow:var(--shadow);
+  }
+  button{
+    font:inherit;font-weight:600;font-size:.86rem;cursor:pointer;
+    padding:7px 14px;border-radius:7px;border:1px solid var(--line);
+    background:transparent;color:var(--ink);transition:.15s;
+  }
+  button:hover{border-color:var(--accent);color:var(--accent)}
+  button[aria-pressed="true"]{background:var(--accent);border-color:var(--accent);color:#fff}
+  .spacer{flex:1}
+  .status{font-size:.84rem;color:var(--muted);font-variant-numeric:tabular-nums}
+
+  .stage{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    box-shadow:var(--shadow);padding:8px;overflow-x:auto;
+  }
+  svg{display:block;width:100%;height:auto;min-width:660px}
+
+  .nlabel{font-size:12.5px;font-weight:650;fill:var(--ink)}
+  .nsub{font-size:10.5px;fill:var(--muted)}
+  .snum{font-size:10px;font-weight:700;fill:var(--muted)}
+  .elabel{font-size:10px;fill:var(--muted)}
+  .ztitle{font-size:11px;font-weight:700;letter-spacing:.06em;fill:var(--muted)}
+
+  .box{fill:var(--panel);stroke:var(--line);stroke-width:1.5}
+  .zone{fill:none;stroke:var(--line);stroke-width:1.2;stroke-dasharray:5 4}
+  .edge{stroke:var(--line);stroke-width:1.6;fill:none}
+  .edge.dash{stroke-dasharray:5 4}
+
+  .node{transition:opacity .3s}
+  .node.hot .box{stroke-width:2.6}
+  .node.dim{opacity:.32}
+
+  .pulse{fill:none;stroke-width:2.6;opacity:0}
+  .node.hot .pulse{animation:ring 1.15s ease-out}
+  @keyframes ring{
+    0%{opacity:.85;transform:scale(1)}
+    100%{opacity:0;transform:scale(1.13)}
+  }
+
+  .flow{stroke-dasharray:7 9;stroke-width:2.4;opacity:0;fill:none}
+  .flow.on{opacity:1;animation:march .85s linear infinite}
+  @keyframes march{to{stroke-dashoffset:-32}}
+
+  .packet{opacity:0}
+  .caption{
+    margin-top:14px;padding:12px 14px;background:var(--panel);
+    border:1px solid var(--line);border-left:3px solid var(--accent);
+    border-radius:8px;min-height:56px;
+  }
+  .caption strong{display:block;font-size:.85rem;margin-bottom:3px}
+  .caption span{color:var(--muted);font-size:.88rem}
+
+  .legend{display:flex;gap:16px;flex-wrap:wrap;margin-top:16px;font-size:.8rem;color:var(--muted)}
+  .legend i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:6px;vertical-align:-1px}
+
+  @media (prefers-reduced-motion:reduce){
+    .flow.on{animation:none;opacity:1;stroke-dasharray:none}
+    .node.hot .pulse{animation:none}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Real-Time Chat — Architecture in Motion</h1>
+    <p class="sub">Two journeys through the same system. <strong>Pipeline</strong> follows a commit from
+    <code>git push</code> to running infrastructure. <strong>Runtime</strong> follows a chat message from one
+    browser to another. Press play, or step through manually.</p>
+  </header>
+
+  <div class="bar">
+    <button id="tab-pipe"  aria-pressed="true">CI/CD Pipeline</button>
+    <button id="tab-run"   aria-pressed="false">Runtime Message Flow</button>
+    <span class="spacer"></span>
+    <button id="prev">‹ Prev</button>
+    <button id="play" aria-pressed="false">▶ Play</button>
+    <button id="next">Next ›</button>
+    <span class="status" id="status">Step 0 / 6</span>
+  </div>
+
+  <div class="stage">
+    <!-- ============================ PIPELINE ============================ -->
+    <svg id="svg-pipe" viewBox="0 0 1080 400" role="img" aria-label="CI/CD pipeline diagram">
+      <defs>
+        <marker id="ah" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/>
+        </marker>
+      </defs>
+
+      <rect class="zone" x="188" y="24" width="600" height="196" rx="12"/>
+      <text class="ztitle" x="204" y="46">JENKINS PIPELINE</text>
+
+      <!-- edges -->
+      <path class="edge" id="e1" d="M104,132 H188"                      marker-end="url(#ah)"/>
+      <path class="edge" id="e2" d="M300,132 H372"                      marker-end="url(#ah)"/>
+      <path class="edge" id="e3" d="M484,132 H556"                      marker-end="url(#ah)"/>
+      <path class="edge" id="e4" d="M628,168 V236 H484"                 marker-end="url(#ah)"/>
+      <path class="edge" id="e5" d="M372,268 H300"                      marker-end="url(#ah)"/>
+      <path class="edge" id="e6" d="M228,300 V340 H904 V196"            marker-end="url(#ah)"/>
+      <path class="edge dash" id="e7" d="M628,96 V60 H904 V96"          marker-end="url(#ah)"/>
+      <path class="edge dash" id="e8" d="M940,132 H1004 V300 H976"      marker-end="url(#ah)"/>
+
+      <!-- animated overlays -->
+      <path class="flow" id="f1" d="M104,132 H188"                 stroke="var(--jenkins)"/>
+      <path class="flow" id="f2" d="M300,132 H372"                 stroke="var(--docker)"/>
+      <path class="flow" id="f3" d="M484,132 H556"                 stroke="var(--docker)"/>
+      <path class="flow" id="f4" d="M628,168 V236 H484"            stroke="var(--terraform)"/>
+      <path class="flow" id="f5" d="M372,268 H300"                 stroke="var(--ansible)"/>
+      <path class="flow" id="f6" d="M228,300 V340 H904 V196"       stroke="var(--ansible)"/>
+      <path class="flow" id="f7" d="M628,96 V60 H904 V96"          stroke="var(--docker)"/>
+      <path class="flow" id="f8" d="M1004,132 V300 H976"           stroke="var(--docker)"/>
+
+      <!-- nodes -->
+      <g class="node" id="p-git">
+        <rect class="pulse" x="24" y="104" width="80" height="56" rx="10" stroke="var(--jenkins)" style="transform-origin:64px 132px"/>
+        <rect class="box" x="24" y="104" width="80" height="56" rx="10" stroke="var(--jenkins)"/>
+        <text class="nlabel" x="64" y="128" text-anchor="middle">GitHub</text>
+        <text class="nsub"   x="64" y="144" text-anchor="middle">git push</text>
+      </g>
+
+      <g class="node" id="p-s1">
+        <rect class="pulse" x="204" y="104" width="96" height="56" rx="10" stroke="var(--jenkins)" style="transform-origin:252px 132px"/>
+        <rect class="box" x="204" y="104" width="96" height="56" rx="10" stroke="var(--jenkins)"/>
+        <text class="snum"   x="216" y="122">1</text>
+        <text class="nlabel" x="252" y="134" text-anchor="middle">Clone Repo</text>
+        <text class="nsub"   x="252" y="150" text-anchor="middle">checkout</text>
+      </g>
+
+      <g class="node" id="p-s2">
+        <rect class="pulse" x="372" y="104" width="112" height="56" rx="10" stroke="var(--docker)" style="transform-origin:428px 132px"/>
+        <rect class="box" x="372" y="104" width="112" height="56" rx="10" stroke="var(--docker)"/>
+        <text class="snum"   x="384" y="122">2</text>
+        <text class="nlabel" x="428" y="134" text-anchor="middle">Build Images</text>
+        <text class="nsub"   x="428" y="150" text-anchor="middle">backend · frontend</text>
+      </g>
+
+      <g class="node" id="p-s3">
+        <rect class="pulse" x="556" y="104" width="144" height="56" rx="10" stroke="var(--docker)" style="transform-origin:628px 132px"/>
+        <rect class="box" x="556" y="104" width="144" height="56" rx="10" stroke="var(--docker)"/>
+        <text class="snum"   x="568" y="122">3</text>
+        <text class="nlabel" x="628" y="134" text-anchor="middle">Push Images</text>
+        <text class="nsub"   x="628" y="150" text-anchor="middle">→ Docker Hub</text>
+      </g>
+
+      <g class="node" id="p-s4">
+        <rect class="pulse" x="556" y="208" width="144" height="56" rx="10" stroke="var(--terraform)" style="transform-origin:628px 236px"/>
+        <rect class="box" x="556" y="208" width="144" height="56" rx="10" stroke="var(--terraform)"/>
+        <text class="snum"   x="568" y="226">4</text>
+        <text class="nlabel" x="628" y="238" text-anchor="middle">Provision EC2</text>
+        <text class="nsub"   x="628" y="254" text-anchor="middle">terraform apply</text>
+      </g>
+
+      <g class="node" id="p-s5">
+        <rect class="pulse" x="372" y="208" width="112" height="56" rx="10" stroke="var(--terraform)" style="transform-origin:428px 236px"/>
+        <rect class="box" x="372" y="208" width="112" height="56" rx="10" stroke="var(--terraform)"/>
+        <text class="snum"   x="384" y="226">5</text>
+        <text class="nlabel" x="428" y="238" text-anchor="middle">Fetch IP</text>
+        <text class="nsub"   x="428" y="254" text-anchor="middle">write inventory</text>
+      </g>
+
+      <g class="node" id="p-s6">
+        <rect class="pulse" x="156" y="244" width="144" height="56" rx="10" stroke="var(--ansible)" style="transform-origin:228px 272px"/>
+        <rect class="box" x="156" y="244" width="144" height="56" rx="10" stroke="var(--ansible)"/>
+        <text class="snum"   x="168" y="262">6</text>
+        <text class="nlabel" x="228" y="274" text-anchor="middle">Run Ansible</text>
+        <text class="nsub"   x="228" y="290" text-anchor="middle">in a container</text>
+      </g>
+
+      <g class="node" id="p-hub">
+        <rect class="pulse" x="844" y="104" width="120" height="56" rx="10" stroke="var(--docker)" style="transform-origin:904px 132px"/>
+        <rect class="box" x="844" y="104" width="120" height="56" rx="10" stroke="var(--docker)"/>
+        <text class="nlabel" x="904" y="128" text-anchor="middle">Docker Hub</text>
+        <text class="nsub"   x="904" y="144" text-anchor="middle">:latest</text>
+      </g>
+
+      <g class="node" id="p-ec2">
+        <rect class="pulse" x="828" y="196" width="152" height="152" rx="12" stroke="var(--aws)" style="transform-origin:904px 272px"/>
+        <rect class="box" x="828" y="196" width="152" height="152" rx="12" stroke="var(--aws)"/>
+        <text class="ztitle" x="904" y="220" text-anchor="middle">AWS EC2 · t3.micro</text>
+        <rect class="box" x="848" y="234" width="112" height="42" rx="8" stroke="var(--node)"/>
+        <text class="nlabel" x="904" y="252" text-anchor="middle">backend</text>
+        <text class="nsub"   x="904" y="266" text-anchor="middle">:5000</text>
+        <rect class="box" x="848" y="288" width="112" height="42" rx="8" stroke="var(--react)"/>
+        <text class="nlabel" x="904" y="306" text-anchor="middle">frontend</text>
+        <text class="nsub"   x="904" y="320" text-anchor="middle">:5173</text>
+      </g>
+
+      <text class="elabel" x="500" y="230" text-anchor="end">public IP</text>
+      <text class="elabel" x="560" y="356" text-anchor="middle">SSH · install Docker · docker run</text>
+      <text class="elabel" x="766" y="54"  text-anchor="middle">push</text>
+      <text class="elabel" x="1012" y="212" text-anchor="middle" transform="rotate(90 1012 212)">pull</text>
+
+      <circle class="packet" id="pk-pipe" r="6" fill="var(--accent)"/>
+    </svg>
+
+    <!-- ============================ RUNTIME ============================ -->
+    <svg id="svg-run" viewBox="0 0 1080 400" role="img" aria-label="Runtime message flow diagram" style="display:none">
+      <defs>
+        <marker id="ah2" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+          <path d="M0,0 L10,5 L0,10 z" fill="var(--line)"/>
+        </marker>
+      </defs>
+
+      <rect class="zone" x="352" y="40" width="336" height="288" rx="12"/>
+      <text class="ztitle" x="368" y="62">NODE.JS CONTAINER · :5000</text>
+
+      <path class="edge" id="r-e1" d="M188,140 H352"           marker-end="url(#ah2)"/>
+      <path class="edge" id="r-e2" d="M520,176 V216"           marker-end="url(#ah2)"/>
+      <path class="edge" id="r-e3" d="M596,240 H772"           marker-end="url(#ah2)"/>
+      <path class="edge" id="r-e4" d="M596,140 H772"           marker-end="url(#ah2)"/>
+      <path class="edge" id="r-e5" d="M444,240 H368 V300"      marker-end="url(#ah2)"/>
+      <path class="edge" id="r-e6" d="M352,300 H188"           marker-end="url(#ah2)"/>
+      <path class="edge dash" id="r-e7" d="M112,176 V264"      marker-end="url(#ah2)"/>
+
+      <path class="flow" id="r-f1" d="M188,140 H352"           stroke="var(--react)"/>
+      <path class="flow" id="r-f2" d="M520,176 V216"           stroke="var(--node)"/>
+      <path class="flow" id="r-f3" d="M596,240 H772"           stroke="var(--mongo)"/>
+      <path class="flow" id="r-f4" d="M596,140 H772"           stroke="var(--cloud)"/>
+      <path class="flow" id="r-f5" d="M444,240 H368 V300"      stroke="var(--accent)"/>
+      <path class="flow" id="r-f6" d="M352,300 H188"           stroke="var(--accent)"/>
+
+      <g class="node" id="r-alice">
+        <rect class="pulse" x="36" y="112" width="152" height="64" rx="10" stroke="var(--react)" style="transform-origin:112px 144px"/>
+        <rect class="box" x="36" y="112" width="152" height="64" rx="10" stroke="var(--react)"/>
+        <text class="nlabel" x="112" y="136" text-anchor="middle">Alice — sender</text>
+        <text class="nsub"   x="112" y="152" text-anchor="middle">React SPA</text>
+        <text class="nsub"   x="112" y="166" text-anchor="middle">axios + socket.io-client</text>
+      </g>
+
+      <g class="node" id="r-bob">
+        <rect class="pulse" x="36" y="264" width="152" height="64" rx="10" stroke="var(--react)" style="transform-origin:112px 296px"/>
+        <rect class="box" x="36" y="264" width="152" height="64" rx="10" stroke="var(--react)"/>
+        <text class="nlabel" x="112" y="288" text-anchor="middle">Bob — recipient</text>
+        <text class="nsub"   x="112" y="304" text-anchor="middle">open WebSocket</text>
+        <text class="nsub"   x="112" y="318" text-anchor="middle">no request sent</text>
+      </g>
+
+      <g class="node" id="r-api">
+        <rect class="pulse" x="444" y="112" width="152" height="64" rx="10" stroke="var(--node)" style="transform-origin:520px 144px"/>
+        <rect class="box" x="444" y="112" width="152" height="64" rx="10" stroke="var(--node)"/>
+        <text class="nlabel" x="520" y="136" text-anchor="middle">Express API</text>
+        <text class="nsub"   x="520" y="152" text-anchor="middle">POST /api/chat/send/:id</text>
+        <text class="nsub"   x="520" y="166" text-anchor="middle">protectRoute → verify JWT</text>
+      </g>
+
+      <g class="node" id="r-io">
+        <rect class="pulse" x="444" y="216" width="152" height="52" rx="10" stroke="var(--accent)" style="transform-origin:520px 242px"/>
+        <rect class="box" x="444" y="216" width="152" height="52" rx="10" stroke="var(--accent)"/>
+        <text class="nlabel" x="520" y="238" text-anchor="middle">Socket.IO</text>
+        <text class="nsub"   x="520" y="254" text-anchor="middle">userSocketMap lookup</text>
+      </g>
+
+      <g class="node" id="r-mongo">
+        <rect class="pulse" x="772" y="212" width="152" height="56" rx="10" stroke="var(--mongo)" style="transform-origin:848px 240px"/>
+        <rect class="box" x="772" y="212" width="152" height="56" rx="10" stroke="var(--mongo)"/>
+        <text class="nlabel" x="848" y="236" text-anchor="middle">MongoDB Atlas</text>
+        <text class="nsub"   x="848" y="252" text-anchor="middle">messages collection</text>
+      </g>
+
+      <g class="node" id="r-cloud">
+        <rect class="pulse" x="772" y="112" width="152" height="56" rx="10" stroke="var(--cloud)" style="transform-origin:848px 140px"/>
+        <rect class="box" x="772" y="112" width="152" height="56" rx="10" stroke="var(--cloud)"/>
+        <text class="nlabel" x="848" y="136" text-anchor="middle">Cloudinary</text>
+        <text class="nsub"   x="848" y="152" text-anchor="middle">image upload → URL</text>
+      </g>
+
+      <text class="elabel" x="270" y="132" text-anchor="middle">REST · jwt cookie</text>
+      <text class="elabel" x="270" y="292" text-anchor="middle">WebSocket push</text>
+      <text class="elabel" x="684" y="232" text-anchor="middle">persist</text>
+      <text class="elabel" x="684" y="132" text-anchor="middle">if image</text>
+      <text class="elabel" x="96"  y="224" text-anchor="middle" transform="rotate(-90 96 224)">presence</text>
+
+      <circle class="packet" id="pk-run" r="6" fill="var(--accent)"/>
+    </svg>
+  </div>
+
+  <div class="caption" id="cap">
+    <strong>Ready</strong>
+    <span>Press Play to watch a commit travel from GitHub to a running EC2 instance.</span>
+  </div>
+
+  <div class="legend">
+    <span><i style="background:var(--jenkins)"></i>Jenkins</span>
+    <span><i style="background:var(--docker)"></i>Docker</span>
+    <span><i style="background:var(--terraform)"></i>Terraform</span>
+    <span><i style="background:var(--ansible)"></i>Ansible</span>
+    <span><i style="background:var(--aws)"></i>AWS</span>
+    <span><i style="background:var(--mongo)"></i>MongoDB</span>
+    <span><i style="background:var(--cloud)"></i>Cloudinary</span>
+  </div>
+</div>
+
+<script>
+(function(){
+  "use strict";
+
+  // Each step lights up some nodes, animates some edges, and moves a packet
+  // along a path. `pathId` is the SVG path the travelling dot follows.
+  var PIPE = [
+    {nodes:["p-git","p-s1"],       flows:["f1"], path:"e1",
+     t:"Stage 1 — Clone Repo",
+     d:"A push to GitHub triggers the Jenkins job. The pipeline checks out the repository onto the build agent."},
+    {nodes:["p-s1","p-s2"],        flows:["f2"], path:"e2",
+     t:"Stage 2 — Build Docker Images",
+     d:"Both tiers are built from their own Dockerfiles: a Node.js API image and a React web image. The build is the same whether it ends up on a laptop or on EC2."},
+    {nodes:["p-s2","p-s3","p-hub"],flows:["f3","f7"], path:"e3",
+     t:"Stage 3 — Push to Docker Hub",
+     d:"Images are tagged and pushed to Docker Hub. The registry login uses a Jenkins credential binding — no password appears in the Jenkinsfile."},
+    {nodes:["p-s4","p-ec2"],       flows:["f4"], path:"e4",
+     t:"Stage 4 — Provision AWS EC2",
+     d:"terraform apply creates a t3.micro instance and a security group opening ports 22, 80, 443, 5000 and 5173. This server did not exist when the build started."},
+    {nodes:["p-s4","p-s5"],        flows:["f5"], path:"e5",
+     t:"Stage 5 — Fetch IP, Write Inventory",
+     d:"The public IP Terraform just created is captured from its output and written into an Ansible inventory at runtime. This is the handoff: two tools that know nothing about each other, bridged by the pipeline."},
+    {nodes:["p-s6","p-ec2","p-hub"],flows:["f6","f8"], path:"e6",
+     t:"Stage 6 — Configure & Deploy",
+     d:"Ansible runs inside its own container, connects over SSH, installs Docker, pulls both images from the registry and starts them. Infrastructure created minutes ago is now serving the app."}
+  ];
+
+  var RUN = [
+    {nodes:["r-alice","r-api"],  flows:["r-f1"], path:"r-e1",
+     t:"1 — Alice sends a message",
+     d:"The browser POSTs to /api/chat/send/:id over REST, carrying the JWT in an httpOnly cookie. protectRoute verifies it and loads the user before anything else runs."},
+    {nodes:["r-api","r-cloud"],  flows:["r-f4"], path:"r-e4",
+     t:"2 — Image upload (optional)",
+     d:"If the message has an attachment, the base64 payload goes to Cloudinary and only the returned URL is kept. The app server never stores the file."},
+    {nodes:["r-api","r-mongo"],  flows:["r-f3"], path:"r-e3",
+     t:"3 — Persist to MongoDB",
+     d:"The message document is written with sender, recipient, text and image URL. Persistence happens before any delivery attempt, so an offline recipient loses nothing."},
+    {nodes:["r-io"],             flows:["r-f5"], path:"r-e5",
+     t:"4 — Look up the recipient's socket",
+     d:"userSocketMap maps user IDs to live socket IDs. If Bob has no entry, he is offline and the message simply waits in the database until he opens the conversation."},
+    {nodes:["r-io","r-bob"],     flows:["r-f6"], path:"r-e6",
+     t:"5 — Push over WebSocket",
+     d:"The message is emitted to Bob's socket specifically — not broadcast to everyone. He receives it without having made a request. Two transports, one user action."}
+  ];
+
+  var svgPipe = document.getElementById("svg-pipe");
+  var svgRun  = document.getElementById("svg-run");
+  var cap     = document.getElementById("cap");
+  var status  = document.getElementById("status");
+  var playBtn = document.getElementById("play");
+
+  var mode = "pipe", idx = -1, timer = null, playing = false;
+  function steps(){ return mode === "pipe" ? PIPE : RUN; }
+  function svg(){ return mode === "pipe" ? svgPipe : svgRun; }
+  function packet(){ return document.getElementById(mode === "pipe" ? "pk-pipe" : "pk-run"); }
+
+  function clear(){
+    [svgPipe, svgRun].forEach(function(s){
+      s.querySelectorAll(".node").forEach(function(n){ n.classList.remove("hot","dim"); });
+      s.querySelectorAll(".flow").forEach(function(f){ f.classList.remove("on"); });
+    });
+    [document.getElementById("pk-pipe"), document.getElementById("pk-run")]
+      .forEach(function(p){ if(p) p.style.opacity = 0; });
+  }
+
+  var rafId = null;
+  function travel(pathId){
+    var p = svg().querySelector("#" + pathId);
+    var dot = packet();
+    if(!p || !dot) return;
+    var len = p.getTotalLength(), start = null, dur = 900;
+    dot.style.opacity = 1;
+    cancelAnimationFrame(rafId);
+    function frame(ts){
+      if(start === null) start = ts;
+      var k = Math.min((ts - start) / dur, 1);
+      var pt = p.getPointAtLength(len * k);
+      dot.setAttribute("cx", pt.x);
+      dot.setAttribute("cy", pt.y);
+      if(k < 1){ rafId = requestAnimationFrame(frame); }
+      else { dot.style.opacity = 0; }
+    }
+    rafId = requestAnimationFrame(frame);
+  }
+
+  function render(){
+    clear();
+    var list = steps();
+    if(idx < 0 || idx >= list.length){
+      status.textContent = "Step 0 / " + list.length;
+      cap.innerHTML = "<strong>Ready</strong><span>" +
+        (mode === "pipe"
+          ? "Press Play to watch a commit travel from GitHub to a running EC2 instance."
+          : "Press Play to follow one chat message from Alice's browser to Bob's.") + "</span>";
+      return;
+    }
+    var st = list[idx];
+    svg().querySelectorAll(".node").forEach(function(n){
+      if(st.nodes.indexOf(n.id) > -1) n.classList.add("hot");
+      else n.classList.add("dim");
+    });
+    st.flows.forEach(function(f){
+      var el = svg().querySelector("#" + f);
+      if(el) el.classList.add("on");
+    });
+    if(st.path) travel(st.path);
+    cap.innerHTML = "<strong>" + st.t + "</strong><span>" + st.d + "</span>";
+    status.textContent = "Step " + (idx + 1) + " / " + list.length;
+  }
+
+  function go(n){
+    var list = steps();
+    idx = n;
+    if(idx >= list.length){
+      if(playing){ stop(); idx = list.length - 1; }
+      else idx = list.length - 1;
+    }
+    if(idx < -1) idx = -1;
+    render();
+  }
+
+  function stop(){
+    playing = false;
+    clearInterval(timer);
+    timer = null;
+    playBtn.textContent = "▶ Play";
+    playBtn.setAttribute("aria-pressed", "false");
+  }
+
+  function start(){
+    playing = true;
+    playBtn.textContent = "❚❚ Pause";
+    playBtn.setAttribute("aria-pressed", "true");
+    if(idx >= steps().length - 1) idx = -1;
+    go(idx + 1);
+    timer = setInterval(function(){
+      if(idx >= steps().length - 1){ stop(); return; }
+      go(idx + 1);
+    }, 3400);
+  }
+
+  playBtn.addEventListener("click", function(){ playing ? stop() : start(); });
+  document.getElementById("next").addEventListener("click", function(){ stop(); go(Math.min(idx + 1, steps().length - 1)); });
+  document.getElementById("prev").addEventListener("click", function(){ stop(); go(Math.max(idx - 1, 0)); });
+
+  function setMode(m){
+    stop();
+    mode = m;
+    idx = -1;
+    var isPipe = m === "pipe";
+    svgPipe.style.display = isPipe ? "block" : "none";
+    svgRun.style.display  = isPipe ? "none"  : "block";
+    document.getElementById("tab-pipe").setAttribute("aria-pressed", String(isPipe));
+    document.getElementById("tab-run").setAttribute("aria-pressed", String(!isPipe));
+    render();
+  }
+  document.getElementById("tab-pipe").addEventListener("click", function(){ setMode("pipe"); });
+  document.getElementById("tab-run").addEventListener("click",  function(){ setMode("run"); });
+
+  document.addEventListener("keydown", function(e){
+    if(e.key === "ArrowRight"){ stop(); go(Math.min(idx + 1, steps().length - 1)); }
+    if(e.key === "ArrowLeft"){  stop(); go(Math.max(idx - 1, 0)); }
+    if(e.key === " "){ e.preventDefault(); playing ? stop() : start(); }
+  });
+
+  render();
+})();
+</script>
+</body>
+</html>
