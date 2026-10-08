@@ -14,6 +14,8 @@
 [![AWS](https://img.shields.io/badge/AWS-EC2-FF9900?logo=amazonec2&logoColor=white)](https://aws.amazon.com/ec2/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
+![UniChat — real-time conversation with live presence indicators](docs/screenshots/chat-dark.png)
+
 ---
 
 ## Overview
@@ -24,7 +26,7 @@ This project removes that step entirely. A push to the repository triggers a Jen
 
 The result: infrastructure that did not exist when the build started is running the application by the time it finishes, with no manual step in between.
 
-The application itself is a one-to-one messaging app — real-time delivery over WebSockets, presence tracking, image attachments, and JWT authentication — chosen because it exercises the parts of a deployment that are genuinely awkward to automate: persistent connections, cross-origin rules, and per-environment configuration.
+The application itself — **UniChat** — is a one-to-one messaging app — real-time delivery over WebSockets, presence tracking, image attachments, and JWT authentication — chosen because it exercises the parts of a deployment that are genuinely awkward to automate: persistent connections, cross-origin rules, and per-environment configuration.
 
 ## Scope & Attribution
 
@@ -392,9 +394,13 @@ Point a Pipeline job at this repository with the script path `jenkins/Jenkinsfil
 4. **Set a profile picture** on the Profile page; it uploads to Cloudinary and the URL is stored on the user.
 5. **Change theme** in Settings — 32 daisyUI themes, persisted in `localStorage`.
 
-> **Screenshots:** _to be added._ Capture the chat view (light and dark), the login screen, and a successful Jenkins pipeline run, and place them in `docs/screenshots/`.
->
-> `frontend/public/screenshot-for-readme.png` is a promotional image inherited from the upstream application and is **not** a screenshot of this deployment — it is deliberately not used here.
+### Screenshots
+
+| Light theme | Sign-in |
+|---|---|
+| ![Chat view in the light theme](docs/screenshots/chat-light.png) | ![Sign-in screen](docs/screenshots/login.png) |
+
+Captured from a local run against a demo MongoDB instance, using seeded demo accounts. The green presence dots are live — the three "Online" contacts each had a real browser session holding an open WebSocket while these were taken.
 
 ## Testing
 
