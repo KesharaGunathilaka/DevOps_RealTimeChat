@@ -6,7 +6,7 @@
 [![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=black)](https://react.dev/)
 [![Vite](https://img.shields.io/badge/Vite-6.2-646CFF?logo=vite&logoColor=white)](https://vitejs.dev/)
 [![Socket.IO](https://img.shields.io/badge/Socket.IO-4.8-010101?logo=socket.io&logoColor=white)](https://socket.io/)
-[![MongoDB](https://img.shields.io/badge/MongoDB-Atlas-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-7-47A248?logo=mongodb&logoColor=white)](https://www.mongodb.com/)
 [![Docker](https://img.shields.io/badge/Docker-Compose-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
 [![Jenkins](https://img.shields.io/badge/Jenkins-Pipeline-D24939?logo=jenkins&logoColor=white)](https://www.jenkins.io/)
 [![Terraform](https://img.shields.io/badge/Terraform-IaC-844FBA?logo=terraform&logoColor=white)](https://www.terraform.io/)
@@ -22,7 +22,7 @@
 
 Deploying a web application by hand is slow, undocumented, and different every time somebody does it. Someone SSHes into a box, pulls a branch, installs a runtime they forgot to write down, and the next person cannot reproduce it.
 
-This project removes that step entirely. A push to the repository triggers a Jenkins pipeline that containerises both tiers of a real-time chat application, publishes the images to Docker Hub, **provisions a brand-new AWS EC2 instance from scratch with Terraform**, reads the public IP that Terraform just created, generates an Ansible inventory from it on the fly, and uses Ansible to install Docker and start the containers on that freshly-created machine.
+This project removes that step entirely. A push to the repository triggers a Jenkins pipeline that containerises both tiers of a real-time chat application, publishes the images to Docker Hub, **provisions a brand-new AWS EC2 instance from scratch with Terraform**, writes the Ansible inventory and SSH key for the server it just created, and uses Ansible to install Docker and bring up the whole stack — web server, API and database — on that freshly-created machine, finishing with a health check.
 
 The result: infrastructure that did not exist when the build started is running the application by the time it finishes, with no manual step in between.
 
@@ -49,13 +49,14 @@ This split is deliberate rather than a shortcut. The module assesses the pipelin
 - 32 selectable UI themes with light/dark support, persisted across sessions
 
 **Infrastructure**
-- Both tiers containerised, with published images on Docker Hub
-- Six-stage Jenkins declarative pipeline, credentials injected via Jenkins' credential store
-- EC2 instance and security group defined as code in Terraform
-- Ansible playbook for Docker installation and container lifecycle
-- Dynamic inventory: Terraform's IP output feeds Ansible in the same run
+- Three-service Docker Compose stack — nginx, Node.js API, MongoDB — with healthchecks and restart policies
+- nginx serves the React build and reverse-proxies REST and WebSocket traffic, so the browser sees a single origin
+- Six-stage Jenkins declarative pipeline, credentials injected from Jenkins' credential store
+- EC2 instance, security group and SSH key pair defined as code in Terraform
+- Terraform writes the Ansible inventory for the server it just created — no manual handoff
+- Idempotent Ansible playbook: Docker, swap, secrets, `docker compose up`, then a smoke test
 - Ansible runs inside a container, so the Jenkins agent needs no Ansible install
-- Environment-driven configuration — the same image runs locally and on AWS
+- Environment-driven configuration — the same images run locally and on AWS
 
 ## Tech Stack
 
@@ -63,11 +64,12 @@ This split is deliberate rather than a shortcut. The module assesses the pipelin
 |---|---|
 | Frontend | React 18, Vite 6, Zustand, Tailwind CSS, daisyUI, Framer Motion |
 | Backend | Node.js 18, Express 4, Socket.IO 4 |
-| Database | MongoDB (Atlas), Mongoose ODM |
+| Database | MongoDB 7 (container, persistent volume), Mongoose ODM |
 | Auth | JSON Web Tokens, bcryptjs, httpOnly cookies |
 | Media | Cloudinary |
 | Logging | Winston (console + file transports) |
-| Containers | Docker, Docker Compose |
+| Web server | nginx (static hosting + reverse proxy for REST and WebSocket) |
+| Containers | Docker, Docker Compose (health-checked services) |
 | CI/CD | Jenkins (declarative pipeline) |
 | IaC | Terraform (AWS provider) |
 | Config Mgmt | Ansible |
@@ -82,7 +84,7 @@ This split is deliberate rather than a shortcut. The module assesses the pipelin
 
 ### CI/CD Pipeline
 
-One trigger takes the project from source to running infrastructure. Stages 4 and 5 are the interesting pair: Terraform creates a server that did not previously exist, and its output becomes Ansible's inventory within the same build.
+One trigger takes the project from source to a running, health-checked application. Stage 4 is the interesting one: Terraform creates a server that did not previously exist, generates the key to reach it, and writes the Ansible inventory from it — so stage 6 can configure a machine that was not there when the build started.
 
 ```mermaid
 flowchart LR
@@ -92,20 +94,20 @@ flowchart LR
     subgraph PIPE ["Jenkins Stages"]
         direction TB
         S1["1 · Clone Repo"]
-        S2["2 · Build Docker Images<br/>backend + frontend"]
+        S2["2 · Build Docker Images<br/>backend + nginx frontend"]
         S3["3 · Push Docker Images"]
         S4["4 · Provision AWS EC2<br/>terraform apply"]
-        S5["5 · Fetch EC2 IP<br/>write Ansible inventory"]
-        S6["6 · Run Ansible in Docker<br/>configure + deploy"]
+        S5["5 · Fetch EC2 IP"]
+        S6["6 · Run Ansible in Docker<br/>configure · deploy · smoke test"]
         S1 --> S2 --> S3 --> S4 --> S5 --> S6
     end
 
     J --> PIPE
     S3 -->|"push :latest"| DH[("Docker Hub")]
     S4 -->|"creates"| EC2["AWS EC2 Instance"]
-    S5 -.->|"public IP"| INV["inventory.ini<br/>generated at runtime"]
+    S4 -.->|"writes"| INV["inventory_generated.ini<br/>+ generated SSH key"]
     INV -.-> S6
-    S6 -->|"docker pull + run"| EC2
+    S6 -->|"SSH: install Docker,<br/>docker compose up"| EC2
     DH -.->|"images pulled on host"| EC2
 
     style PIPE fill:#f6f8fa,stroke:#57606a
@@ -115,33 +117,43 @@ flowchart LR
 
 ### Application Architecture
 
-The browser holds **two** connections to the backend at once: REST for request/response work, and a persistent WebSocket for anything that has to arrive without being asked for. Both must agree on the same allowed origin — which is exactly where this project's most instructive bug lived.
+nginx is the only public entry point. It serves the compiled React app and reverse-proxies both `/api` (REST) and `/socket.io` (WebSocket) to the Node.js container, so the browser only ever talks to one origin. That removed the cross-origin configuration that originally made the app undeployable, and it means the frontend image needs no knowledge of the server's address.
 
 ```mermaid
 flowchart TB
     subgraph CLIENT ["Browser — React SPA"]
         UI["Components<br/>Sidebar · ChatContainer · MessageInput"]
         STORE["Zustand Stores<br/>useAuthStore · useChatStore · useThemeStore"]
-        AX["axios instance<br/>withCredentials: true"]
-        SIO["socket.io-client"]
+        AX["axios<br/>relative /api, withCredentials"]
+        SIO["socket.io-client<br/>same origin"]
         UI <--> STORE
         STORE --> AX
         STORE --> SIO
     end
 
-    subgraph SERVER ["Node.js Container — port 5000"]
+    subgraph NGINX ["nginx container — port 80"]
+        STATIC["static React build"]
+        PROXY["reverse proxy<br/>/api · /socket.io"]
+    end
+
+    subgraph SERVER ["Node.js container — port 5000, internal only"]
         EXP["Express App"]
         MW["protectRoute<br/>JWT cookie verification"]
         AUTHR["/api/auth<br/>signup · login · logout · check · update-profile"]
         CHATR["/api/chat<br/>users · :id · send/:id"]
+        HEALTH["/api/health"]
         IO["Socket.IO Server<br/>userSocketMap"]
         EXP --> MW --> AUTHR & CHATR
+        EXP --> HEALTH
     end
 
-    AX -->|"HTTPS / REST<br/>jwt cookie"| EXP
-    SIO <-->|"WebSocket<br/>?userId=..."| IO
+    UI -->|"GET /"| STATIC
+    AX -->|"HTTP · jwt cookie"| PROXY
+    SIO <-->|"WebSocket upgrade"| PROXY
+    PROXY --> EXP
+    PROXY <--> IO
 
-    MONGO[("MongoDB Atlas<br/>users · messages")]
+    MONGO[("MongoDB 7 container<br/>users · messages")]
     CLOUD[("Cloudinary<br/>image CDN")]
 
     AUTHR --> MONGO
@@ -151,6 +163,7 @@ flowchart TB
     CHATR -.->|"emit newMessage<br/>to recipient socket"| IO
 
     style CLIENT fill:#eef6ff,stroke:#0969da
+    style NGINX fill:#f6f8fa,stroke:#57606a
     style SERVER fill:#f0fff4,stroke:#1a7f37
     style MONGO fill:#e8f5e9,stroke:#2e7d32
     style CLOUD fill:#fff8e1,stroke:#f57c00
@@ -163,39 +176,39 @@ flowchart TB
     USER(["End User<br/>web browser"])
 
     subgraph AWS ["AWS — eu-north-1"]
-        subgraph SG ["Security Group: real_chat-security-group"]
+        subgraph SG ["Security Group"]
             direction TB
-            PORTS["Inbound<br/>22 SSH · 80 HTTP · 443 HTTPS<br/>5000 API · 5173 Web"]
-            subgraph EC2 ["EC2 t3.micro — real_chat-Server"]
+            PORTS["Inbound<br/>80 HTTP · 22 SSH for Ansible"]
+            subgraph EC2 ["EC2 t3.micro · Ubuntu 24.04 · Docker Compose"]
                 direction LR
-                FE["frontend container<br/>:5173"]
-                BE["backend container<br/>:5000"]
-                DOCK["Docker Engine<br/>installed by Ansible"]
+                FE["frontend<br/>nginx :80"]
+                BE["backend<br/>Node.js :5000"]
+                DB[("mongo :27017<br/>named volume")]
             end
         end
     end
 
-    subgraph EXT ["External Managed Services"]
-        ATLAS[("MongoDB Atlas")]
+    subgraph EXT ["External Services"]
         CDN[("Cloudinary")]
         HUB[("Docker Hub<br/>kesharagunathilaka/*")]
     end
 
-    USER -->|":5173"| PORTS
-    USER -->|":5000 REST + WS"| PORTS
-    PORTS --> EC2
-    FE -->|"REST + WebSocket"| BE
-    BE --> ATLAS
+    USER -->|"http :80"| PORTS
+    PORTS --> FE
+    FE -->|"/api · /socket.io"| BE
+    BE --> DB
     BE --> CDN
-    HUB -.->|"docker pull"| DOCK
+    HUB -.->|"docker compose pull"| EC2
 
     TF["Terraform"] -.->|"provisions"| EC2
-    ANS["Ansible<br/>over SSH :22"] -.->|"configures"| DOCK
+    ANS["Ansible<br/>over SSH :22"] -.->|"configures"| EC2
 
     style AWS fill:#fff8f0,stroke:#bf8700
     style EC2 fill:#ffffff,stroke:#57606a
     style EXT fill:#f6f8fa,stroke:#57606a
 ```
+
+Only nginx publishes a port; the API and database are reachable only on the Compose network. Startup is ordered by healthchecks: MongoDB must answer a ping before the API starts, and the API's `/api/health` must report a live database connection before nginx starts taking traffic.
 
 ## How a Message Travels
 
@@ -272,18 +285,18 @@ erDiagram
 
 | Tool | Version | Needed for |
 |---|---|---|
-| Node.js | 18+ | Running locally |
-| npm | 9+ | Dependencies |
-| Docker + Compose | 20+ | Container workflow |
+| Docker + Compose | 24+ | Container workflow; also runs MongoDB and Ansible |
+| Node.js | 18+ | Running without Docker, and the smoke test |
 | Terraform | 1.5+ | AWS provisioning |
-| Ansible | 2.14+ | Or use the containerised run |
-| MongoDB Atlas | free tier | Database |
 | Cloudinary | free tier | Image uploads |
 | AWS account | — | EC2 deployment |
+| Jenkins | 2.x, Windows agent | The automated pipeline |
+
+Ansible does not need installing: every playbook run happens inside the `alpine/ansible` container.
 
 ### Environment Variables
 
-Copy the example files and fill in real values. Both `.env` files are gitignored and excluded from the Docker build context — no secrets are committed to this repository.
+Copy the example files and fill in real values. Both `.env` files are gitignored and excluded from the Docker build context — no secrets are committed to this repository or baked into an image.
 
 ```bash
 cp backend/.env.example backend/.env
@@ -294,97 +307,108 @@ cp frontend/.env.example frontend/.env
 
 | Variable | Description |
 |---|---|
-| `PORT` | API listen port. Defaults to `5000` if unset. |
-| `NODE_ENV` | `development` or `production`. Anything other than `development` marks the auth cookie `Secure` (HTTPS only). |
-| `ORIGIN` | Origin allowed by CORS — for **both** REST and the Socket.IO handshake. Must exactly match the URL the browser loads, port included, no trailing slash. |
+| `PORT` | API listen port. Defaults to `5000`. |
+| `NODE_ENV` | `development` or `production`. |
+| `COOKIE_SECURE` | `true`/`false`. Marks the auth cookie HTTPS-only. Defaults to `true` unless `NODE_ENV=development`; set `false` when serving over plain HTTP, or browsers silently drop the cookie and login never sticks. |
+| `ORIGIN` | Origin allowed by CORS for REST and the Socket.IO handshake. Must match the URL the browser loads, port included, no trailing slash. |
 | `LOG_LEVEL` | Winston level: `error`, `warn`, `info`, `debug`. Defaults to `info`. |
-| `MONGO` | MongoDB connection string. |
+| `MONGO` | MongoDB connection string. Compose sets this for you. |
 | `JWT_SECRET` | Long random string for signing tokens. |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cloudinary dashboard credentials. |
 
-**`frontend/.env`**
+**`frontend/.env`** — only for `npm run dev`; the Docker image uses neither.
 
 | Variable | Description |
 |---|---|
 | `VITE_API_BASE_URL` | Base URL for REST calls. Unset falls back to relative `/api`. |
-| `VITE_BASE_URL` | Origin for the Socket.IO client (no `/api` suffix). |
+| `VITE_BASE_URL` | Origin for the Socket.IO client. Unset means same origin. |
 
 > Only variables prefixed `VITE_` are exposed to browser code — never put a secret in one.
 
-### Run Locally
+### Run with Docker Compose (recommended)
 
 ```bash
 git clone https://github.com/KesharaGunathilaka/DevOps_RealTimeChat.git
+cd DevOps_RealTimeChat
+docker compose up --build
 ```
 
-Backend, in one terminal:
+Open <http://localhost:3000>. This builds all three services from source and runs the same nginx → API → MongoDB topology that runs on EC2. Cloudinary values are read from your shell environment if set; image uploads are the only feature that needs them.
+
+To see real-time delivery, sign up as two users in two browser profiles (or one normal and one private window — a shared cookie jar logs the first account out).
+
+### Run Locally (without Docker for the app)
+
+Start a database, set `MONGO=mongodb://localhost:27017/realtimechat` in `backend/.env`, then run each tier in its own terminal:
+
+```bash
+docker run -d --name unichat-mongo -p 27017:27017 mongo:7
+```
 
 ```bash
 cd backend && npm install && npm run dev
 ```
 
-Frontend, in a second:
-
 ```bash
 cd frontend && npm install && npm run dev
 ```
 
-Open <http://localhost:5173>. To see real-time delivery, sign up as two different users in two browser profiles (or one normal window and one private window — a shared cookie jar will log you out of the first account).
-
-### Run with Docker Compose
-
-```bash
-docker compose up --build
-```
-
-Frontend on `:5173`, backend on `:5000`. `backend/.env` supplies the API's configuration. Note that Compose here does **not** start a MongoDB container — `MONGO` should point at Atlas or another reachable instance ([Known Limitations](#known-limitations)).
+Open <http://localhost:5173>.
 
 ## Deploying to AWS
 
-> The steps below reflect the configuration in this repository. They were **not** re-executed against a live AWS account in the most recent documentation pass — the demo instance has been torn down to avoid charges. `terraform validate` passes and the Compose file resolves; treat the cloud steps as reproducible instructions rather than a freshly-verified run.
+The Jenkins pipeline is the intended path, but each stage can also be run by hand.
 
 ### 1. Provision with Terraform
 
-Requires an EC2 key pair named `key1` in `eu-north-1`, with the private key available to Ansible.
+Needs AWS credentials in the environment (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) or in `~/.aws/credentials`. An IAM user limited to EC2 is enough — never use root account keys.
 
 ```bash
 terraform -chdir=terraform init
 terraform -chdir=terraform apply
-terraform -chdir=terraform output -raw instance_public_ip
 ```
 
-This creates a `t3.micro` and a security group opening ports 22, 80, 443, 5000, and 5173.
+This creates a `t3.micro` on the current Ubuntu 24.04 image, a security group allowing only ports 80 and 22, and a fresh SSH key pair. It also writes two gitignored files for the next step: `ansible/deploy_key.pem` and `ansible/inventory_generated.ini`. Restrict SSH to your own address with `-var ssh_cidr=<your-ip>/32`.
 
 ### 2. Configure & Deploy with Ansible
 
-Write an inventory pointing at the IP from the previous step:
-
-```ini
-[ec2]
-<public-ip> ansible_user=ubuntu ansible_ssh_private_key_file=/path/to/key1.pem
-```
-
-Then run the playbook — it installs Docker, pulls both images, and starts the containers:
+Ansible runs from a container. The app's secrets are read from your environment:
 
 ```bash
-ansible-playbook -i inventory.ini ansible/playbook.yml
+docker run --rm -v "$PWD":/work -w /work \
+  -e ANSIBLE_HOST_KEY_CHECKING=False \
+  -e JWT_SECRET -e CLOUDINARY_CLOUD_NAME -e CLOUDINARY_API_KEY -e CLOUDINARY_API_SECRET \
+  alpine/ansible:2.20.0 sh -c "cp ansible/deploy_key.pem /tmp/k && chmod 600 /tmp/k && \
+    ansible-playbook -i ansible/inventory_generated.ini --private-key /tmp/k ansible/playbook.yml"
 ```
 
-Set `ORIGIN` on the backend container to `http://<public-ip>:5173` and the frontend's `VITE_*` variables to the matching public IP. Leaving `ORIGIN` unset falls back to `localhost` and the browser will block every request.
+The playbook waits for the new instance to accept SSH, installs Docker and the Compose plugin, adds swap, writes the secrets to a `0600` env file, runs `docker compose up`, and finishes by checking `/api/health` through nginx. It is idempotent: re-running it rolls the stack onto the newest images.
 
 ### 3. Running the Jenkins Pipeline
 
-Create these credentials in Jenkins (**Manage Jenkins → Credentials**), matching the IDs in [`jenkins/Jenkinsfile`](jenkins/Jenkinsfile):
+Add these as **Secret text** credentials in Jenkins (**Manage Jenkins → Credentials**), matching the IDs in [`jenkins/Jenkinsfile`](jenkins/Jenkinsfile):
 
-| Credential ID | Type |
+| Credential ID | Value |
 |---|---|
-| `DOCKERHUB_PASS` | Secret text — Docker Hub access token |
-| `AWS_ACCESS_KEY` | Secret text |
-| `AWS_SECRET_KEY` | Secret text |
+| `DOCKERHUB_PASS` | Docker Hub access token |
+| `AWS_ACCESS_KEY` | IAM access key ID |
+| `AWS_SECRET_KEY` | IAM secret access key |
+| `JWT_SECRET` | Long random string |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name |
+| `CLOUDINARY_API_KEY` | Cloudinary API key |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
 
-Point a Pipeline job at this repository with the script path `jenkins/Jenkinsfile` and build. The pipeline runs stages 1–6 as shown in the [CI/CD diagram](#cicd-pipeline).
+Create a Pipeline job using **Pipeline script from SCM**, pointing at this repository with script path `jenkins/Jenkinsfile`, and build. The final step curls `/api/health` from the Jenkins host, which proves the app is reachable from outside AWS.
 
-> **Agent requirement:** the pipeline uses `bat` steps and therefore requires a **Windows** Jenkins agent with Docker and Terraform on `PATH`. Porting to Linux means swapping `bat` for `sh` throughout.
+> **Agent requirement:** the pipeline uses `bat` steps, so it needs a **Windows** Jenkins agent with Docker and Terraform on `PATH`. A Linux agent needs `bat` swapped for `sh`.
+
+### 4. Tearing It Down
+
+```bash
+terraform -chdir=terraform destroy
+```
+
+A running `t3.micro` and its public IPv4 address cost roughly $12/month outside the free tier. Destroying the instance also deletes the MongoDB volume, so chat history does not survive.
 
 ## Usage
 
@@ -404,32 +428,35 @@ Captured from a local run against a demo MongoDB instance, using seeded demo acc
 
 ## Testing
 
-**There is no automated test suite yet** — this is the most significant gap in the project, and it is stated plainly rather than hidden. `npm test` in `backend/` is still the npm-generated placeholder that exits non-zero.
-
-What *is* verified, and how to reproduce it:
+[`scripts/smoke-test.cjs`](scripts/smoke-test.cjs) is an end-to-end test of a running stack. It goes through nginx exactly as a browser would and checks ten things: the SPA and its client-side routing, `/api/health`, signup, that the auth cookie is usable over HTTP, an authenticated session, a WebSocket upgrade through the proxy, live presence, message persistence, and real-time delivery of that message to a second user.
 
 ```bash
-cd backend  && npm install && node --check server.js   # backend parses
-cd frontend && npm install && npm run build            # production build succeeds
-cd frontend && npm run lint                            # ESLint
-terraform -chdir=terraform init -backend=false
-terraform -chdir=terraform validate                    # IaC is valid
-docker compose config                                  # Compose resolves
+npm --prefix frontend install
+docker compose up --build -d --wait
+node scripts/smoke-test.cjs http://localhost:3000
 ```
 
-Most recent run: the frontend builds cleanly (1,680 modules → 287 kB JS, 92 kB gzipped), `terraform validate` reports success, and the Compose file resolves. Backend fail-fast behaviour was confirmed by pointing `MONGO` at an unreachable URI: the process logs the error and exits `1` instead of listening.
+Point it at an EC2 address to verify a deployment. Each run creates two throwaway `@e2e.local` users.
 
-See [Future Improvements](#future-improvements) for the intended test plan.
+Static checks:
+
+```bash
+npm --prefix frontend run build
+terraform -chdir=terraform init -backend=false
+terraform -chdir=terraform validate
+```
+
+Most recent results: smoke test **10/10** against the local Compose stack, clean frontend production build, `terraform validate` and `terraform fmt -check` passing, and the playbook passing `ansible-playbook --syntax-check`. Backend fail-fast was also confirmed: an unreachable `MONGO` makes the process log the error and exit `1` instead of listening.
+
+There are no unit tests yet, and the smoke test is not yet a pipeline stage — see [Known Limitations](#known-limitations).
 
 ## Project Structure
 
 ```
 .
 ├── ansible/
-│   ├── playbook.yml          # canonical: install Docker, pull images, run containers
-│   ├── deploy.yml            # earlier variant (see Known Limitations)
-│   ├── setup-docker.yml      # earlier variant — Docker install only
-│   └── inventory.ini         # placeholder; the real inventory is generated by Jenkins
+│   ├── playbook.yml          # Docker, swap, secrets, compose up, smoke test
+│   └── inventory.ini         # example only; Terraform writes inventory_generated.ini
 ├── backend/
 │   ├── controllers/          # authController, chatController
 │   ├── lib/                  # db, socket, cloudinary, jwt utils
@@ -445,35 +472,46 @@ See [Future Improvements](#future-improvements) for the intended test plan.
 │   │   ├── pages/            # Home, Login, SignUp, Profile, Settings
 │   │   ├── store/            # Zustand: auth, chat, theme
 │   │   └── lib/              # axios instance, helpers
-│   ├── Dockerfile
+│   ├── Dockerfile            # multi-stage: Vite build -> nginx
+│   ├── nginx.conf            # static hosting + /api and /socket.io proxy
 │   └── .env.example
 ├── jenkins/Jenkinsfile       # six-stage declarative pipeline
-├── terraform/main.tf         # EC2 instance + security group + IP output
-├── docker-compose.yml
+├── terraform/main.tf         # EC2, security group, key pair, Ansible inventory
+├── scripts/smoke-test.cjs    # end-to-end test through nginx
+├── docs/                     # animated architecture page, screenshots
+├── docker-compose.yml        # local stack, built from source
+├── docker-compose.prod.yml   # production stack, deployed by Ansible
 └── LICENSE
 ```
 
 ## Challenges & What We Learned
 
 **An application that runs is not an application that deploys.**
-The base app worked perfectly on `localhost` and broke completely on EC2. The cause was a single line:
+The base app worked perfectly on `localhost` and broke completely on a server. The cause was one line:
 
 ```js
 const Origin = "http://localhost:5173" || process.env.ORIGIN;
 ```
 
-`||` returns its first truthy operand — and a non-empty string is always truthy, so `process.env.ORIGIN` was unreachable code. The environment variable existed, was documented, was set correctly on the server, and was never once read. Every cross-origin request from the deployed frontend was rejected by CORS.
+`||` returns its first truthy operand, and a non-empty string is always truthy, so `process.env.ORIGIN` was unreachable. The variable existed, was documented, was set correctly, and was never read. It is not a syntax error, a warning, or a failing test — it is valid JavaScript that does something other than what it looks like, and it only shows up in the environment that is hardest to debug. The same hardcoded origin also appeared separately in the Socket.IO config. The lesson: **configuration that never varies during development is exactly the configuration nobody tests.**
 
-Two things made this hard to spot. It is not a syntax error, a warning, or a failing test — it is valid JavaScript that does something other than what it looks like. And it only manifests in the one environment that is hardest to debug. The same hardcoded origin appeared independently in the Socket.IO CORS config, so fixing one still left real-time messaging broken. The lesson we actually took: **configuration that never varies during development is exactly the configuration nobody tests.**
+**A login that succeeded and then vanished.**
+In production the auth cookie was marked `Secure`, meaning HTTPS-only. Our server speaks plain HTTP, so the browser accepted the login response and silently threw the cookie away; the next request was unauthenticated. No error appears anywhere. The fix was to make the flag explicit (`COOKIE_SECURE`) instead of inferring it from `NODE_ENV` — and the real fix, HTTPS, is listed under Future Improvements.
+
+**Building an image for a server that does not exist yet.**
+The pipeline builds the frontend in stage 2, but the server's IP only exists after Terraform runs in stage 4. Any address baked into the frontend at build time was guaranteed to be wrong. Putting nginx in front, serving the app *and* proxying `/api` and `/socket.io`, made the browser talk to a single origin. The image now needs no address at all, and the cross-origin problem disappeared rather than being configured away.
 
 **The build context is part of the deployment.**
-`frontend/.env` pointed at `localhost:5000`. It was correctly gitignored — but `.dockerignore` did not exclude it, so `COPY . .` baked it into the image. The deployed frontend, running on a public EC2 instance, was politely asking *the visitor's own laptop* for its API. Gitignore and dockerignore answer different questions: one is about what you publish to source control, the other about what you publish to a container registry.
+`frontend/.env` pointed at `localhost:5000`. It was correctly gitignored — but `.dockerignore` did not exclude it, so `COPY . .` baked it into the image. We confirmed this by unpacking the published image. Gitignore and dockerignore answer different questions: one is about what you publish to source control, the other about what you publish to a container registry.
 
 **Passing state between tools that do not know about each other.**
-Terraform knows the IP of the machine it just created. Ansible needs that IP to configure it. Neither has any notion of the other. The pipeline bridges them by capturing `terraform output -raw instance_public_ip` and writing an inventory file at runtime, so infrastructure created in stage 4 is addressable in stage 6 of the same build. Running Ansible inside `williamyeh/ansible:alpine3` rather than installing it on the agent kept the Jenkins host disposable — a useful habit when the agent is a Windows machine that has no business hosting a Python toolchain.
+Terraform knows the address of the machine it just created; Ansible needs it. Terraform now writes the Ansible inventory and generates the SSH key itself, so stage 6 reaches a server that did not exist when the build started, with no manual step and no hand-made key pair. Ansible runs inside a pinned `alpine/ansible` container rather than on the agent. The image we originally used had not been updated since 2018, which is old enough to break against a modern Ubuntu's Python.
+
+**Windows batch has opinions.**
+Running the pipeline on a Windows agent surfaced three bugs that would never appear on Linux: `echo %PASSWORD% | docker login` sends the password with a trailing space; capturing a command's output with `returnStdout` also captures the echoed command line; and a private key on a Windows bind mount looks world-readable inside a Linux container, so `ssh` refuses to use it. Each one is a single line to fix and hard to find.
 
 **Fail loudly, and early.**
-`connectDB()` originally ran inside the `server.listen` callback and logged failures without exiting. A container with an unreachable database would start, report healthy, bind its port, and return 500s to every request. Moving the connection *before* `listen` and exiting non-zero on failure means the container dies immediately and visibly — a crash-looping container is a far better diagnostic than a running one that silently serves nothing.
+The API originally connected to MongoDB *after* it started listening, and only logged a failure. A container with no database would bind its port, look healthy, and return 500s to everyone. Connecting first, exiting non-zero on failure, and gating startup on healthchecks means a broken deploy now fails visibly — and the pipeline's final step proves the app works from outside AWS rather than assuming it.
 
 ## Known Limitations
 
@@ -481,30 +519,31 @@ Documented deliberately. These are understood, not undiscovered.
 
 | Area | Limitation |
 |---|---|
-| **Frontend image** | The Dockerfile runs `npm run dev` — the Vite **dev server** — as its entrypoint. It works, but it ships HMR and unminified assets. A multi-stage build serving `dist/` via nginx is the correct fix. |
-| **No test suite** | No unit, integration, or end-to-end tests. The pipeline builds and deploys unverified code. |
-| **No pipeline quality gate** | No lint, test, or `terraform validate` stage. Three pre-existing ESLint errors (`vite.config.js`, `tailwind.config.js`, a vendored `magicui` component) would need resolving before a lint gate could pass. |
-| **SSH open to the world** | The security group allows port 22 from `0.0.0.0/0`. It should be restricted to a known admin CIDR. |
-| **Local Terraform state** | No remote backend. State lives on whichever Jenkins agent ran last — unshared, unlocked, and unencrypted. S3 + DynamoDB is the standard remedy. |
-| **Compose has no database** | `docker-compose.yml` defines no MongoDB service, so `MONGO` must point at an external instance. |
-| **Duplicate Ansible playbooks** | `deploy.yml` and `setup-docker.yml` are earlier variants of `playbook.yml`, kept for history. Only `playbook.yml` is invoked by the pipeline. |
-| **Jenkins IP capture** | `bat(returnStdout: true)` includes the echoed command line in its output, so the captured IP needs `@echo off` to be reliably clean. |
-| **Windows-only pipeline** | All pipeline steps use `bat`. A Linux agent needs them changed to `sh`. |
-| **Unused dependencies** | `morgan`, `body-parser`, and `cloudinary_js` are declared in `backend/package.json` but imported nowhere. |
-| **Single-region, single-instance** | One `t3.micro`, no load balancer, no auto-scaling, no HTTPS termination. Appropriate for the module's scope, not for production. |
-| **`node_modules` in history** | `backend/node_modules/` was committed early on. It is untracked going forward, but remains in earlier commits — purging it would require rewriting history and breaking every existing clone. |
+| **No HTTPS** | The app is served over plain HTTP, which is why the auth cookie runs with `COOKIE_SECURE=false`. Credentials cross the network unencrypted. |
+| **Test coverage** | One end-to-end smoke test, no unit tests, and the smoke test is not a pipeline stage (the agent is not assumed to have Node.js). |
+| **Lint gate** | Three pre-existing ESLint errors (`vite.config.js`, `tailwind.config.js`, a vendored `magicui` component) would fail a lint stage. |
+| **SSH open by default** | `ssh_cidr` defaults to `0.0.0.0/0` because the Jenkins host's address is not fixed. Pass your own `/32` to narrow it. |
+| **Local Terraform state** | State lives in the Jenkins workspace — unshared, unlocked and unencrypted, and it also holds the generated SSH key. An S3 backend with DynamoDB locking is the standard fix. |
+| **Data lives on the instance** | MongoDB runs in a container with a local volume. `terraform destroy` deletes all chat history, and there are no backups. |
+| **`:latest` tags only** | Images are not tagged per commit, so there is no one-step rollback to a previous build. |
+| **Windows-only pipeline** | All steps use `bat`. A Linux agent needs them changed to `sh`. |
+| **Pipeline always builds `main`** | The Jenkinsfile clones `main` explicitly rather than the branch that triggered the build. |
+| **Backend image** | Uses `npm install` rather than `npm ci`, ships devDependencies, and runs as root. |
+| **Unused dependencies** | `morgan`, `body-parser` and `cloudinary_js` are declared in `backend/package.json` but imported nowhere. |
+| **Single instance** | One `t3.micro`, no load balancer, no auto-scaling. Appropriate for the module's scope, not for production. |
+| **`node_modules` in history** | `backend/node_modules/` was committed early on. It is untracked now but remains in earlier commits; purging it would mean rewriting history. |
 
 ## Future Improvements
 
-- **Multi-stage frontend build** — `npm run build` → nginx, for a smaller, production-appropriate image
-- **Test suite** — Vitest + Supertest on the auth flow (signup validation, duplicate email, wrong password, JWT issuance) and the chat routes, plus a Socket.IO delivery test
-- **Pipeline quality gate** — lint, test, `terraform validate`, and image vulnerability scanning before any deploy stage
+- **HTTPS** — a domain plus Caddy or certbot in front of nginx, then turn `COOKIE_SECURE` back on
+- **Test suite** — unit tests for the auth and chat controllers, and the smoke test as a pipeline stage
+- **Pipeline quality gate** — lint, tests, `terraform validate` and an image vulnerability scan before any deploy stage
+- **Immutable image tags** — tag by commit SHA so a bad deploy can be rolled back in one step
 - **Remote Terraform state** — S3 backend with DynamoDB locking
-- **Zero-downtime deploys** — health-checked rolling replacement instead of `docker run` on a bare host
-- **HTTPS** — an ALB or Caddy/nginx with Let's Encrypt, so the auth cookie's `Secure` flag is meaningful
-- **Group chat and message history pagination** — the schema supports the first with a conversation collection; the second matters as soon as a thread grows
+- **Managed or backed-up database** — scheduled `mongodump` to S3, or a managed MongoDB service
+- **Group chat and message pagination** — the first needs a conversation collection; the second matters as soon as a thread grows
 - **Read receipts and typing indicators** — natural extensions of the existing socket layer
-- **Centralised logging** — ship the Winston output somewhere queryable rather than to a file inside an ephemeral container
+- **Centralised logging** — ship Winston output somewhere queryable instead of a file inside a container
 
 ## Team
 
