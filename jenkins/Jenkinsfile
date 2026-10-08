@@ -1,59 +1,86 @@
+// Six-stage pipeline: build -> publish -> provision -> configure & deploy.
+// Runs on a Windows agent (bat steps) with Docker and Terraform on PATH.
 pipeline {
     agent any
-    environment {
-        DOCKERHUB_USER = 'kesharagunathilaka'
-        DOCKERHUB_PASS = credentials('DOCKERHUB_PASS')
-        AWS_ACCESS_KEY = credentials('AWS_ACCESS_KEY')
-        AWS_SECRET_KEY = credentials('AWS_SECRET_KEY')
 
+    environment {
+        DOCKERHUB_USER        = 'kesharagunathilaka'
+        DOCKERHUB_PASS        = credentials('DOCKERHUB_PASS')
+        // Mapped to the standard names the Terraform AWS provider reads.
+        AWS_ACCESS_KEY_ID     = credentials('AWS_ACCESS_KEY')
+        AWS_SECRET_ACCESS_KEY = credentials('AWS_SECRET_KEY')
+        // App secrets, forwarded to Ansible, which writes them to the server's .env.
+        JWT_SECRET            = credentials('JWT_SECRET')
+        CLOUDINARY_CLOUD_NAME = credentials('CLOUDINARY_CLOUD_NAME')
+        CLOUDINARY_API_KEY    = credentials('CLOUDINARY_API_KEY')
+        CLOUDINARY_API_SECRET = credentials('CLOUDINARY_API_SECRET')
     }
+
     stages {
         stage('Clone Repo') {
             steps {
                 git branch: 'main', url: 'https://github.com/KesharaGunathilaka/DevOps_RealTimeChat'
             }
         }
+
         stage('Build Docker Images') {
             steps {
-                bat 'docker build -t %DOCKERHUB_USER%/backend:latest -f backend/Dockerfile backend/'
-                bat 'docker build -t %DOCKERHUB_USER%/frontend:latest -f frontend/Dockerfile frontend/'
+                bat 'docker build -t %DOCKERHUB_USER%/backend:latest backend'
+                bat 'docker build -t %DOCKERHUB_USER%/frontend:latest frontend'
             }
         }
+
         stage('Push Docker Images') {
             steps {
-                bat 'echo %DOCKERHUB_PASS% | docker login -u %DOCKERHUB_USER% --password-stdin'
+                // The parentheses stop cmd.exe from sending a trailing space as part of the password.
+                bat '(echo %DOCKERHUB_PASS%)| docker login -u %DOCKERHUB_USER% --password-stdin'
                 bat 'docker push %DOCKERHUB_USER%/backend:latest'
                 bat 'docker push %DOCKERHUB_USER%/frontend:latest'
             }
         }
+
         stage('Provision AWS EC2') {
             steps {
-                bat 'cd terraform && terraform init && terraform apply -auto-approve'
+                // Also writes ansible/inventory_generated.ini and ansible/deploy_key.pem.
+                bat 'terraform -chdir=terraform init -input=false'
+                bat 'terraform -chdir=terraform apply -auto-approve -input=false'
             }
         }
-        
+
         stage('Fetch EC2 IP') {
             steps {
-            script {
-            def ec2_ip = bat(script: 'cd terraform && terraform output -raw instance_public_ip', returnStdout: true).trim()
-            env.EC2_IP = ec2_ip
-            echo "EC2 Public IP: ${env.EC2_IP}"
-
-            // Write inventory file for Ansible
-            //check this inventory file try create it manually
-            writeFile file: 'inventory.ini', text: "[ec2]\n${env.EC2_IP} ansible_user=ubuntu ansible_ssh_private_key_file=C:/ProgramData/Jenkins/.jenkins/workspace/real-time-chat/ansible/key1.pem"
+                script {
+                    // '@' stops cmd.exe echoing the command line into the captured output.
+                    def out = bat(script: '@terraform -chdir=terraform output -raw instance_public_ip', returnStdout: true)
+                    env.EC2_IP = out.trim().readLines().last().trim()
+                    echo "EC2 public IP: ${env.EC2_IP}"
                 }
             }
         }
+
         stage('Run Ansible in Docker') {
             steps {
-        script {
-            // Run Ansible playbook in import Docker and run container 
-            bat """
-            docker run --rm -v %cd%:/ansible -w /ansible williamyeh/ansible:alpine3 ansible-playbook ansible/playbook.yml -i inventory.ini
-            """
-                }
+                // The key is copied inside the container because files on a Windows bind
+                // mount appear world-readable, and ssh refuses keys with open permissions.
+                bat '''
+                docker run --rm -v "%WORKSPACE%":/work -w /work ^
+                  -e ANSIBLE_HOST_KEY_CHECKING=False ^
+                  -e DOCKERHUB_USER -e JWT_SECRET ^
+                  -e CLOUDINARY_CLOUD_NAME -e CLOUDINARY_API_KEY -e CLOUDINARY_API_SECRET ^
+                  alpine/ansible:2.20.0 sh -c "cp ansible/deploy_key.pem /tmp/deploy_key && chmod 600 /tmp/deploy_key && ansible-playbook -i ansible/inventory_generated.ini --private-key /tmp/deploy_key ansible/playbook.yml"
+                '''
+                // Check from outside AWS too: proves the security group lets real traffic in.
+                bat 'curl --fail --silent --show-error --retry 10 --retry-delay 5 --retry-all-errors http://%EC2_IP%/api/health'
             }
+        }
+    }
+
+    post {
+        success {
+            echo "Deployed: http://${env.EC2_IP}"
+        }
+        always {
+            bat 'docker logout'
         }
     }
 }

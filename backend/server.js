@@ -2,6 +2,7 @@ import express from "express";
 import dotenv from "dotenv";
 import cookieParser from "cookie-parser";
 import cors from "cors";
+import mongoose from "mongoose";
 
 import path from "path";
 
@@ -27,6 +28,12 @@ app.use(
     credentials: true,
   })
 );
+
+// Readiness probe for Docker healthchecks and the post-deploy smoke test.
+app.get("/api/health", (req, res) => {
+  const dbUp = mongoose.connection.readyState === 1;
+  res.status(dbUp ? 200 : 503).json({ status: dbUp ? "ok" : "degraded", db: dbUp });
+});
 
 app.use("/api/auth", authRoutes);
 app.use("/api/chat", chatRoutes);
