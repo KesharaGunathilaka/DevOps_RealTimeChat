@@ -24,4 +24,4 @@
       command: docker run -d --name backend -p 5000:5000 kesharagunathilaka/backend:latest
 
     - name: Run Frontend Container
-      command: docker run -d --name frontend -p 3000:3000 --env BACKEND_URL=http://{{ ansible_default_ipv4.address }}:5000 kesharagunathilaka/frontend:latest
+      command: docker run -d --name frontend -p 5173:5173 --env BACKEND_URL=http://{{ ansible_default_ipv4.address }}:5000 kesharagunathilaka/frontend:latest
