@@ -2,3 +2,6 @@ node_modules
 logs
 Dockerfile
 .dockerignore
+.env
+.env.*
+!.env.example
