@@ -66,7 +66,7 @@ resource "aws_key_pair" "deploy" {
 
 resource "local_sensitive_file" "deploy_key" {
   content         = tls_private_key.deploy.private_key_openssh
-  filename        = "${path.module}/../ansible/deploy_key.pem"
+  filename        = "${path.module}/../../ansible/deploy_key.pem"
   file_permission = "0600"
 }
 
@@ -129,10 +129,10 @@ resource "aws_instance" "real_chat" {
 # Terraform just created, so stage 6 can reach a server that did not exist
 # when the build started.
 resource "local_file" "ansible_inventory" {
-  filename = "${path.module}/../ansible/inventory_generated.ini"
+  filename = "${path.module}/../../ansible/inventory_generated.ini"
   content  = <<-EOT
     [ec2]
-    ${aws_instance.real_chat.public_ip} ansible_user=ubuntu
+    ${aws_instance.real_chat.public_ip} ansible_user=ubuntu app_origin=http://${aws_instance.real_chat.public_ip}
   EOT
 }
 
