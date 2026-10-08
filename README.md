@@ -1,6 +1,6 @@
 # Real-Time Chat — MERN Application with a Full CI/CD & IaC Pipeline
 
-> A one-to-one real-time chat application, deployed to AWS by a six-stage Jenkins pipeline that builds containers, provisions its own infrastructure with Terraform, and configures the server with Ansible — from a single trigger.
+> A one-to-one real-time chat application with a six-stage Jenkins pipeline that builds containers, provisions a server with Terraform — on AWS EC2 or a free local EC2 stand-in — and deploys to it with Ansible, from a single trigger.
 
 [![Node.js](https://img.shields.io/badge/Node.js-18-339933?logo=node.js&logoColor=white)](https://nodejs.org/)
 [![React](https://img.shields.io/badge/React-18.3-61DAFB?logo=react&logoColor=black)](https://react.dev/)
@@ -22,7 +22,7 @@
 
 Deploying a web application by hand is slow, undocumented, and different every time somebody does it. Someone SSHes into a box, pulls a branch, installs a runtime they forgot to write down, and the next person cannot reproduce it.
 
-This project removes that step entirely. A push to the repository triggers a Jenkins pipeline that containerises both tiers of a real-time chat application, publishes the images to Docker Hub, **provisions a brand-new AWS EC2 instance from scratch with Terraform**, writes the Ansible inventory and SSH key for the server it just created, and uses Ansible to install Docker and bring up the whole stack — web server, API and database — on that freshly-created machine, finishing with a health check.
+This project removes that step entirely. A push to the repository triggers a Jenkins pipeline that containerises both tiers of a real-time chat application, publishes the images to Docker Hub, **provisions a brand-new server from scratch with Terraform** — an AWS EC2 instance, or a local Ubuntu server that stands in for one — writes the Ansible inventory and SSH key for the server it just created, and uses Ansible to install Docker and bring up the whole stack — web server, API and database — on that freshly-created machine, finishing with a health check.
 
 The result: infrastructure that did not exist when the build started is running the application by the time it finishes, with no manual step in between.
 
@@ -52,6 +52,7 @@ This split is deliberate rather than a shortcut. The module assesses the pipelin
 - Three-service Docker Compose stack — nginx, Node.js API, MongoDB — with healthchecks and restart policies
 - nginx serves the React build and reverse-proxies REST and WebSocket traffic, so the browser sees a single origin
 - Six-stage Jenkins declarative pipeline, credentials injected from Jenkins' credential store
+- Two deploy targets from one pipeline: AWS EC2, or a local EC2 stand-in for zero-cost end-to-end runs — same playbook for both
 - EC2 instance, security group and SSH key pair defined as code in Terraform
 - Terraform writes the Ansible inventory for the server it just created — no manual handoff
 - Idempotent Ansible playbook: Docker, swap, secrets, `docker compose up`, then a smoke test
@@ -84,7 +85,7 @@ This split is deliberate rather than a shortcut. The module assesses the pipelin
 
 ### CI/CD Pipeline
 
-One trigger takes the project from source to a running, health-checked application. Stage 4 is the interesting one: Terraform creates a server that did not previously exist, generates the key to reach it, and writes the Ansible inventory from it — so stage 6 can configure a machine that was not there when the build started.
+One trigger takes the project from source to a running, health-checked application. Stage 4 is the interesting one: Terraform creates a server that did not previously exist, generates the key to reach it, and writes the Ansible inventory from it — so stage 6 can configure a machine that was not there when the build started. A `DEPLOY_TARGET` build parameter decides whether that server is an AWS EC2 instance or the local stand-in; every other stage is identical.
 
 ```mermaid
 flowchart LR
@@ -96,15 +97,15 @@ flowchart LR
         S1["1 · Clone Repo"]
         S2["2 · Build Docker Images<br/>backend + nginx frontend"]
         S3["3 · Push Docker Images"]
-        S4["4 · Provision AWS EC2<br/>terraform apply"]
-        S5["5 · Fetch EC2 IP"]
+        S4["4 · Provision Infrastructure<br/>terraform apply"]
+        S5["5 · Fetch Server Address"]
         S6["6 · Run Ansible in Docker<br/>configure · deploy · smoke test"]
         S1 --> S2 --> S3 --> S4 --> S5 --> S6
     end
 
     J --> PIPE
     S3 -->|"push :latest"| DH[("Docker Hub")]
-    S4 -->|"creates"| EC2["AWS EC2 Instance"]
+    S4 -->|"creates"| EC2["Ubuntu 24.04 server<br/>AWS EC2 or local stand-in"]
     S4 -.->|"writes"| INV["inventory_generated.ini<br/>+ generated SSH key"]
     INV -.-> S6
     S6 -->|"SSH: install Docker,<br/>docker compose up"| EC2
@@ -208,6 +209,8 @@ flowchart TB
     style EXT fill:#f6f8fa,stroke:#57606a
 ```
 
+This is the AWS target. The local target reproduces it on one machine: the server is a container, its port 80 is published as `localhost:8088`, and Ansible reaches it over a Docker network instead of the internet.
+
 Only nginx publishes a port; the API and database are reachable only on the Compose network. Startup is ordered by healthchecks: MongoDB must answer a ping before the API starts, and the API's `/api/health` must report a live database connection before nginx starts taking traffic.
 
 ## How a Message Travels
@@ -289,7 +292,7 @@ erDiagram
 | Node.js | 18+ | Running without Docker, and the smoke test |
 | Terraform | 1.5+ | AWS provisioning |
 | Cloudinary | free tier | Image uploads |
-| AWS account | — | EC2 deployment |
+| AWS account | — | Only for the `aws` deploy target |
 | Jenkins | 2.x, Windows agent | The automated pipeline |
 
 Ansible does not need installing: every playbook run happens inside the `alpine/ansible` container.
@@ -313,7 +316,7 @@ cp frontend/.env.example frontend/.env
 | `ORIGIN` | Origin allowed by CORS for REST and the Socket.IO handshake. Must match the URL the browser loads, port included, no trailing slash. |
 | `LOG_LEVEL` | Winston level: `error`, `warn`, `info`, `debug`. Defaults to `info`. |
 | `MONGO` | MongoDB connection string. Compose sets this for you. |
-| `JWT_SECRET` | Long random string for signing tokens. |
+| `JWT_SECRET` | Long random string for signing tokens. In deployments Ansible generates one on the server if none is supplied. |
 | `CLOUDINARY_CLOUD_NAME` / `CLOUDINARY_API_KEY` / `CLOUDINARY_API_SECRET` | Cloudinary dashboard credentials. |
 
 **`frontend/.env`** — only for `npm run dev`; the Docker image uses neither.
@@ -355,60 +358,69 @@ cd frontend && npm install && npm run dev
 
 Open <http://localhost:5173>.
 
-## Deploying to AWS
+## Deploying
 
-The Jenkins pipeline is the intended path, but each stage can also be run by hand.
+### Deploy Targets
 
-### 1. Provision with Terraform
+| Target | What Terraform provisions | Cost |
+|---|---|---|
+| `local` | `terraform/local` — an Ubuntu 24.04 container running systemd and sshd, with an `ubuntu` sudo user and a generated SSH key: what a fresh EC2 instance gives Ansible. The app is served at <http://localhost:8088>. | Free |
+| `aws` | `terraform/aws` — a `t3.micro` EC2 instance, security group and key pair. | ~$12/month while running |
 
-Needs AWS credentials in the environment (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) or in `~/.aws/credentials`. An IAM user limited to EC2 is enough — never use root account keys.
+Both write the same two files for Ansible — `ansible/deploy_key.pem` and `ansible/inventory_generated.ini` — and the same playbook deploys to either. The local target exists so the whole pipeline can be exercised end to end without a cloud bill; it is not a substitute for AWS-specific behaviour (see [Known Limitations](#known-limitations)).
+
+### Running the Jenkins Pipeline
+
+Add these as **Secret text** credentials in Jenkins (**Manage Jenkins → Credentials**), matching the IDs in [`jenkins/Jenkinsfile`](jenkins/Jenkinsfile):
+
+| Credential ID | Value | Needed for |
+|---|---|---|
+| `DOCKERHUB_PASS` | Docker Hub access token | Both targets |
+| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name | Both targets |
+| `CLOUDINARY_API_KEY` | Cloudinary API key | Both targets |
+| `CLOUDINARY_API_SECRET` | Cloudinary API secret | Both targets |
+| `AWS_ACCESS_KEY` | IAM access key ID (EC2-only user) | `aws` only |
+| `AWS_SECRET_KEY` | IAM secret access key | `aws` only |
+
+Create a Pipeline job using **Pipeline script from SCM**, pointing at this repository with script path `jenkins/Jenkinsfile`. Choose **Build with Parameters** and pick a target. The last step curls `/api/health` from the Jenkins host, so a green build means the app is reachable, not merely that every command exited zero.
+
+> **Agent requirement:** the pipeline uses `bat` steps, so it needs a **Windows** Jenkins agent with Docker and Terraform on `PATH`. A Linux agent needs `bat` swapped for `sh`, and `terraform/local` needs `-var docker_host=unix:///var/run/docker.sock`.
+
+### Running the Stages by Hand
+
+**1. Provision** — pick one:
 
 ```bash
-terraform -chdir=terraform init
-terraform -chdir=terraform apply
+terraform -chdir=terraform/local init
+terraform -chdir=terraform/local apply
 ```
 
-This creates a `t3.micro` on the current Ubuntu 24.04 image, a security group allowing only ports 80 and 22, and a fresh SSH key pair. It also writes two gitignored files for the next step: `ansible/deploy_key.pem` and `ansible/inventory_generated.ini`. Restrict SSH to your own address with `-var ssh_cidr=<your-ip>/32`.
+```bash
+terraform -chdir=terraform/aws init
+terraform -chdir=terraform/aws apply
+```
 
-### 2. Configure & Deploy with Ansible
+The AWS target needs credentials in the environment (`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`) or `~/.aws/credentials`; an IAM user limited to EC2 is enough. It creates a `t3.micro` on the current Ubuntu 24.04 image and a security group allowing only ports 80 and 22. Restrict SSH to your own address with `-var ssh_cidr=<your-ip>/32`.
 
-Ansible runs from a container. The app's secrets are read from your environment:
+**2. Configure and deploy** — Ansible runs from a container; Cloudinary values are read from your environment. For the local target add `--network unichat-sim` after `--rm`:
 
 ```bash
 docker run --rm -v "$PWD":/work -w /work \
   -e ANSIBLE_HOST_KEY_CHECKING=False \
-  -e JWT_SECRET -e CLOUDINARY_CLOUD_NAME -e CLOUDINARY_API_KEY -e CLOUDINARY_API_SECRET \
+  -e CLOUDINARY_CLOUD_NAME -e CLOUDINARY_API_KEY -e CLOUDINARY_API_SECRET \
   alpine/ansible:2.20.0 sh -c "cp ansible/deploy_key.pem /tmp/k && chmod 600 /tmp/k && \
     ansible-playbook -i ansible/inventory_generated.ini --private-key /tmp/k ansible/playbook.yml"
 ```
 
-The playbook waits for the new instance to accept SSH, installs Docker and the Compose plugin, adds swap, writes the secrets to a `0600` env file, runs `docker compose up`, and finishes by checking `/api/health` through nginx. It is idempotent: re-running it rolls the stack onto the newest images.
+The playbook waits for the new server to accept SSH, installs Docker and the Compose plugin, adds swap on real instances, generates or reuses a JWT secret, writes the secrets to a `0600` env file, runs `docker compose up`, and finishes by checking `/api/health` through nginx. It is idempotent: re-running it rolls the stack onto the newest images and changes nothing else.
 
-### 3. Running the Jenkins Pipeline
-
-Add these as **Secret text** credentials in Jenkins (**Manage Jenkins → Credentials**), matching the IDs in [`jenkins/Jenkinsfile`](jenkins/Jenkinsfile):
-
-| Credential ID | Value |
-|---|---|
-| `DOCKERHUB_PASS` | Docker Hub access token |
-| `AWS_ACCESS_KEY` | IAM access key ID |
-| `AWS_SECRET_KEY` | IAM secret access key |
-| `JWT_SECRET` | Long random string |
-| `CLOUDINARY_CLOUD_NAME` | Cloudinary cloud name |
-| `CLOUDINARY_API_KEY` | Cloudinary API key |
-| `CLOUDINARY_API_SECRET` | Cloudinary API secret |
-
-Create a Pipeline job using **Pipeline script from SCM**, pointing at this repository with script path `jenkins/Jenkinsfile`, and build. The final step curls `/api/health` from the Jenkins host, which proves the app is reachable from outside AWS.
-
-> **Agent requirement:** the pipeline uses `bat` steps, so it needs a **Windows** Jenkins agent with Docker and Terraform on `PATH`. A Linux agent needs `bat` swapped for `sh`.
-
-### 4. Tearing It Down
+**3. Tear down:**
 
 ```bash
-terraform -chdir=terraform destroy
+terraform -chdir=terraform/local destroy
 ```
 
-A running `t3.micro` and its public IPv4 address cost roughly $12/month outside the free tier. Destroying the instance also deletes the MongoDB volume, so chat history does not survive.
+Destroying either target deletes the MongoDB volume, so chat history does not survive. On AWS, destroy the instance when you are done — a running `t3.micro` and its public IPv4 address cost roughly $12/month outside the free tier.
 
 ## Usage
 
@@ -442,11 +454,11 @@ Static checks:
 
 ```bash
 npm --prefix frontend run build
-terraform -chdir=terraform init -backend=false
-terraform -chdir=terraform validate
+terraform -chdir=terraform/aws init -backend=false
+terraform -chdir=terraform/aws validate
 ```
 
-Most recent results: smoke test **10/10** against the local Compose stack, clean frontend production build, `terraform validate` and `terraform fmt -check` passing, and the playbook passing `ansible-playbook --syntax-check`. Backend fail-fast was also confirmed: an unreachable `MONGO` makes the process log the error and exit `1` instead of listening.
+Most recent results: a full provision-and-deploy run on the local target — Terraform created the server (8 resources), the playbook configured it over SSH, and the smoke test passed **10/10** against it from outside — plus 10/10 against the local Compose stack, clean frontend production build, `terraform validate` and `terraform fmt -check` passing, and the playbook passing `ansible-playbook --syntax-check`. Backend fail-fast was also confirmed: an unreachable `MONGO` makes the process log the error and exit `1` instead of listening.
 
 There are no unit tests yet, and the smoke test is not yet a pipeline stage — see [Known Limitations](#known-limitations).
 
@@ -476,7 +488,11 @@ There are no unit tests yet, and the smoke test is not yet a pipeline stage — 
 │   ├── nginx.conf            # static hosting + /api and /socket.io proxy
 │   └── .env.example
 ├── jenkins/Jenkinsfile       # six-stage declarative pipeline
-├── terraform/main.tf         # EC2, security group, key pair, Ansible inventory
+├── terraform/
+│   ├── aws/main.tf           # EC2, security group, key pair, Ansible inventory
+│   └── local/                # EC2 stand-in: same handoff, provisioned as a container
+│       ├── main.tf
+│       └── standin/          # Ubuntu 24.04 + systemd + sshd image
 ├── scripts/smoke-test.cjs    # end-to-end test through nginx
 ├── docs/                     # animated architecture page, screenshots
 ├── docker-compose.yml        # local stack, built from source
@@ -507,8 +523,11 @@ The pipeline builds the frontend in stage 2, but the server's IP only exists aft
 **Passing state between tools that do not know about each other.**
 Terraform knows the address of the machine it just created; Ansible needs it. Terraform now writes the Ansible inventory and generates the SSH key itself, so stage 6 reaches a server that did not exist when the build started, with no manual step and no hand-made key pair. Ansible runs inside a pinned `alpine/ansible` container rather than on the agent. The image we originally used had not been updated since 2018, which is old enough to break against a modern Ubuntu's Python.
 
-**Windows batch has opinions.**
-Running the pipeline on a Windows agent surfaced three bugs that would never appear on Linux: `echo %PASSWORD% | docker login` sends the password with a trailing space; capturing a command's output with `returnStdout` also captures the echoed command line; and a private key on a Windows bind mount looks world-readable inside a Linux container, so `ssh` refuses to use it. Each one is a single line to fix and hard to find.
+**A green build that deployed nothing.**
+The original pipeline's last run in April 2025 finished `SUCCESS`. Its log tells a different story. On a Windows agent, `bat(returnStdout: true)` captures the echoed command line along with the output, so the "IP address" handed to Ansible was the prompt, the command, and then the IP. Ansible matched no hosts, printed `skipping: no hosts matched`, and exited zero. Terraform had created an EC2 instance; the pipeline never deployed anything to it. The fix is one character (`@` suppresses the echo), but the lesson is bigger: a pipeline that checks only exit codes is checking that commands ran, not that the app works. The pipeline now ends by requesting `/api/health` from outside the server.
+
+**Testing against a server you can afford to break.**
+Rather than pay for EC2 to test every change, the pipeline gained a local target: Terraform provisions an Ubuntu container that boots systemd and sshd like a fresh instance, and the unchanged playbook deploys to it. Running for real surfaced bugs that syntax checks never would. Ansible play variables outrank inventory variables, so per-host settings in the generated inventory were being silently overridden. And Docker 29 stores image layers in `/var/lib/containerd`, which had to be moved onto a volume before Docker could run inside the stand-in.
 
 **Fail loudly, and early.**
 The API originally connected to MongoDB *after* it started listening, and only logged a failure. A container with no database would bind its port, look healthy, and return 500s to everyone. Connecting first, exiting non-zero on failure, and gating startup on healthchecks means a broken deploy now fails visibly — and the pipeline's final step proves the app works from outside AWS rather than assuming it.
@@ -526,6 +545,8 @@ Documented deliberately. These are understood, not undiscovered.
 | **Local Terraform state** | State lives in the Jenkins workspace — unshared, unlocked and unencrypted, and it also holds the generated SSH key. An S3 backend with DynamoDB locking is the standard fix. |
 | **Data lives on the instance** | MongoDB runs in a container with a local volume. `terraform destroy` deletes all chat history, and there are no backups. |
 | **`:latest` tags only** | Images are not tagged per commit, so there is no one-step rollback to a previous build. |
+| **The local target is not AWS** | The stand-in is a privileged container sharing the host's kernel. It proves the provision → configure → deploy flow, but not AWS-specific behaviour: security groups, the AMI, public networking. |
+| **AWS target not re-applied** | `terraform/aws` validates, but it has not been applied since the configuration was reworked. The last real EC2 provisioning was the April 2025 run described above. |
 | **Windows-only pipeline** | All steps use `bat`. A Linux agent needs them changed to `sh`. |
 | **Pipeline always builds `main`** | The Jenkinsfile clones `main` explicitly rather than the branch that triggered the build. |
 | **Backend image** | Uses `npm install` rather than `npm ci`, ships devDependencies, and runs as root. |
