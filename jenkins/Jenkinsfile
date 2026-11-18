@@ -38,8 +38,8 @@ pipeline {
 
         stage('Push Docker Images') {
             steps {
-                // The parentheses stop cmd.exe appending a trailing space to the piped password.
-                bat '(echo %DOCKERHUB_PASS%)| docker login -u %DOCKERHUB_USER% --password-stdin'
+                // cmd's echo made Docker Hub reject a valid token with Docker 29. PowerShell writes the raw secret.
+                bat 'powershell -NoProfile -NonInteractive -Command "[Console]::Out.Write($env:DOCKERHUB_PASS)" | docker login -u %DOCKERHUB_USER% --password-stdin'
                 bat 'docker push %DOCKERHUB_USER%/backend:latest'
                 bat 'docker push %DOCKERHUB_USER%/frontend:latest'
             }
