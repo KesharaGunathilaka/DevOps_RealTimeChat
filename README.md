@@ -575,7 +575,7 @@ Documented deliberately. These are understood, not undiscovered.
 Built jointly for the DevOps module by:
 
 - **Keshara Gunathilaka**
-- **Akila**
+- **Akila Piumanthta**
 
 Both members collaborated across the whole project — containerisation, the Jenkins pipeline, Terraform, and Ansible. Commits were pushed from a single account, so the contributor graph shows one author.
 
