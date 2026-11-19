@@ -500,84 +500,12 @@ There are no unit tests yet, and the smoke test is not yet a pipeline stage — 
 └── LICENSE
 ```
 
-## Challenges & What We Learned
-
-**An application that runs is not an application that deploys.**
-The base app worked perfectly on `localhost` and broke completely on a server. The cause was one line:
-
-```js
-const Origin = "http://localhost:5173" || process.env.ORIGIN;
-```
-
-`||` returns its first truthy operand, and a non-empty string is always truthy, so `process.env.ORIGIN` was unreachable. The variable existed, was documented, was set correctly, and was never read. It is not a syntax error, a warning, or a failing test — it is valid JavaScript that does something other than what it looks like, and it only shows up in the environment that is hardest to debug. The same hardcoded origin also appeared separately in the Socket.IO config. The lesson: **configuration that never varies during development is exactly the configuration nobody tests.**
-
-**A login that succeeded and then vanished.**
-In production the auth cookie was marked `Secure`, meaning HTTPS-only. Our server speaks plain HTTP, so the browser accepted the login response and silently threw the cookie away; the next request was unauthenticated. No error appears anywhere. The fix was to make the flag explicit (`COOKIE_SECURE`) instead of inferring it from `NODE_ENV` — and the real fix, HTTPS, is listed under Future Improvements.
-
-**Building an image for a server that does not exist yet.**
-The pipeline builds the frontend in stage 2, but the server's IP only exists after Terraform runs in stage 4. Any address baked into the frontend at build time was guaranteed to be wrong. Putting nginx in front, serving the app *and* proxying `/api` and `/socket.io`, made the browser talk to a single origin. The image now needs no address at all, and the cross-origin problem disappeared rather than being configured away.
-
-**The build context is part of the deployment.**
-`frontend/.env` pointed at `localhost:5000`. It was correctly gitignored — but `.dockerignore` did not exclude it, so `COPY . .` baked it into the image. We confirmed this by unpacking the published image. Gitignore and dockerignore answer different questions: one is about what you publish to source control, the other about what you publish to a container registry.
-
-**Passing state between tools that do not know about each other.**
-Terraform knows the address of the machine it just created; Ansible needs it. Terraform now writes the Ansible inventory and generates the SSH key itself, so stage 6 reaches a server that did not exist when the build started, with no manual step and no hand-made key pair. Ansible runs inside a pinned `alpine/ansible` container rather than on the agent. The image we originally used had not been updated since 2018, which is old enough to break against a modern Ubuntu's Python.
-
-**A green build that deployed nothing.**
-The original pipeline's last run in April 2025 finished `SUCCESS`. Its log tells a different story. On a Windows agent, `bat(returnStdout: true)` captures the echoed command line along with the output, so the "IP address" handed to Ansible was the prompt, the command, and then the IP. Ansible matched no hosts, printed `skipping: no hosts matched`, and exited zero. Terraform had already created an EC2 instance in an earlier run (this build's apply added nothing new); the pipeline never deployed anything to it. The fix is one character (`@` suppresses the echo), but the lesson is bigger: a pipeline that checks only exit codes is checking that commands ran, not that the app works. The pipeline now ends by requesting `/api/health` from outside the server.
-
-**Testing against a server you can afford to break.**
-Rather than pay for EC2 to test every change, the pipeline gained a local target: Terraform provisions an Ubuntu container that boots systemd and sshd like a fresh instance, and the unchanged playbook deploys to it. Running for real surfaced bugs that syntax checks never would. Ansible play variables outrank inventory variables, so per-host settings in the generated inventory were being silently overridden. And Docker 29 stores image layers in `/var/lib/containerd`, which had to be moved onto a volume before Docker could run inside the stand-in.
-
-**A valid token that Jenkins kept rejecting.**
-After the rework, the first Jenkins runs failed at `docker login` with `unauthorized: incorrect username or password`, although the same Docker Hub token logged in from a terminal, and from the Jenkins script console when handed to Docker directly. The pipeline passed the secret through `cmd`'s `echo`; writing it with PowerShell instead (`[Console]::Out.Write`, no line break) logged in with the same stored secret. We did not pin down exactly what `echo` changes, only that the two forms behave differently against the same token under Docker 29. Two more runs then failed on network errors while pushing large image layers (a timeout and a broken pipe), and a retry resumed from the layers already uploaded. Build 116 was the first run to pass end to end.
-
-**Fail loudly, and early.**
-The API originally connected to MongoDB *after* it started listening, and only logged a failure. A container with no database would bind its port, look healthy, and return 500s to everyone. Connecting first, exiting non-zero on failure, and gating startup on healthchecks means a broken deploy now fails visibly — and the pipeline's final step proves the app works from outside AWS rather than assuming it.
-
-## Known Limitations
-
-Documented deliberately. These are understood, not undiscovered.
-
-| Area | Limitation |
-|---|---|
-| **No HTTPS** | The app is served over plain HTTP, which is why the auth cookie runs with `COOKIE_SECURE=false`. Credentials cross the network unencrypted. |
-| **Test coverage** | One end-to-end smoke test, no unit tests, and the smoke test is not a pipeline stage (the agent is not assumed to have Node.js). |
-| **Lint gate** | Three pre-existing ESLint errors (`vite.config.js`, `tailwind.config.js`, a vendored `magicui` component) would fail a lint stage. |
-| **SSH open by default** | `ssh_cidr` defaults to `0.0.0.0/0` because the Jenkins host's address is not fixed. Pass your own `/32` to narrow it. |
-| **Local Terraform state** | State lives in the Jenkins workspace — unshared, unlocked and unencrypted, and it also holds the generated SSH key. An S3 backend with DynamoDB locking is the standard fix. |
-| **Data lives on the instance** | MongoDB runs in a container with a local volume. `terraform destroy` deletes all chat history, and there are no backups. |
-| **`:latest` tags only** | Images are not tagged per commit, so there is no one-step rollback to a previous build. |
-| **The local target is not AWS** | The stand-in is a privileged container sharing the host's kernel. It proves the provision → configure → deploy flow, but not AWS-specific behaviour: security groups, the AMI, public networking. |
-| **AWS target not re-applied** | `terraform/aws` validates, but it has not been applied since the configuration was reworked. The last real EC2 provisioning was the April 2025 run described above. The Jenkins run that verified the pipeline end to end (build 116) used the local target. |
-| **No push retry** | A transient Docker Hub upload error (a timeout, a dropped connection) fails the build at stage 3. It happened twice before build 116 passed; re-running resumes from the layers already uploaded. |
-| **Windows-only pipeline** | All steps use `bat`. A Linux agent needs them changed to `sh`. |
-| **Pipeline always builds `main`** | The Jenkinsfile clones `main` explicitly rather than the branch that triggered the build. |
-| **Backend image** | Uses `npm install` rather than `npm ci`, ships devDependencies, and runs as root. |
-| **Unused dependencies** | `morgan`, `body-parser` and `cloudinary_js` are declared in `backend/package.json` but imported nowhere. |
-| **Single instance** | One `t3.micro`, no load balancer, no auto-scaling. Appropriate for the module's scope, not for production. |
-| **`node_modules` in history** | `backend/node_modules/` was committed early on. It is untracked now but remains in earlier commits; purging it would mean rewriting history. |
-
-## Future Improvements
-
-- **HTTPS** — a domain plus Caddy or certbot in front of nginx, then turn `COOKIE_SECURE` back on
-- **Test suite** — unit tests for the auth and chat controllers, and the smoke test as a pipeline stage
-- **Pipeline quality gate** — lint, tests, `terraform validate` and an image vulnerability scan before any deploy stage
-- **Immutable image tags** — tag by commit SHA so a bad deploy can be rolled back in one step
-- **Remote Terraform state** — S3 backend with DynamoDB locking
-- **Managed or backed-up database** — scheduled `mongodump` to S3, or a managed MongoDB service
-- **Group chat and message pagination** — the first needs a conversation collection; the second matters as soon as a thread grows
-- **Read receipts and typing indicators** — natural extensions of the existing socket layer
-- **Centralised logging** — ship Winston output somewhere queryable instead of a file inside a container
-
 ## Team
 
 Built jointly for the DevOps module by:
 
 - **Keshara Gunathilaka**
 - **Akila Piumanthta**
-
-Both members collaborated across the whole project — containerisation, the Jenkins pipeline, Terraform, and Ansible. Commits were pushed from a single account, so the contributor graph shows one author.
 
 ## License
 
