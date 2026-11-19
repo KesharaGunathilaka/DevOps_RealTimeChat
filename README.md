@@ -96,28 +96,6 @@ The `aws` target costs roughly $12 a month while it runs, so destroy it when you
 
 This run used the local target. The AWS target was last used for real in April 2025, before the rework.
 
-## Things that went wrong, and what we learned
-
-**It worked on localhost and broke on a server.** The backend's allowed origin was written as `"http://localhost:5173" || process.env.ORIGIN`. A non-empty string is always true, so the environment variable was never read. There was no error, only a broken deployment. We fixed it and put nginx in front so the browser uses one origin.
-
-**A green build that deployed nothing.** Jenkins build 110 (April 2025) finished `SUCCESS`, but its log says `skipping: no hosts matched`. On a Windows agent, the "server IP" passed to Ansible also contained the command that printed it, so Ansible found no hosts, skipped every task and exited cleanly. The fix was one character (`@`). The bigger lesson is that a pipeline checking only exit codes shows that commands ran, not that the app works. That is why the last step now calls `/api/health` from outside.
-
-**A valid Docker Hub token that Jenkins rejected.** After the rework, `docker login` failed in Jenkins with `unauthorized`, although the same token worked in a terminal. The pipeline sent the secret through `cmd`'s `echo`; sending it with PowerShell instead worked. We did not work out exactly what `echo` changes, only that the two behave differently. Two later runs then failed on network errors while pushing large image layers, and a retry picked up where it left off. Build 116 was the first run to pass.
-
-**Testing without paying for AWS.** We added the local target: an Ubuntu container running systemd and sshd that the same playbook deploys to. Running it for real found bugs a syntax check never would, for example Ansible play variables silently overriding inventory variables, and Docker 29 keeping image layers in a different folder than expected.
-
-## What is not done
-
-- No HTTPS yet, so the login cookie is sent without the `Secure` flag.
-- One end-to-end smoke test and no unit tests. The smoke test is not a pipeline stage.
-- The AWS target has not been run since the rework. Build 116 used the local target.
-- One server, MongoDB data on that server (lost when the server is destroyed), images tagged only `latest`, Terraform state stored locally.
-- A failed Docker Hub upload fails the whole build; there is no retry in the pipeline.
-- The pipeline is Windows-only, and always builds `main`.
-- The backend image runs as root and uses `npm install`.
-
-Ideas for next time: HTTPS with a domain, tests as a pipeline stage, image tags per commit, and remote Terraform state.
-
 ## Project structure
 
 ```
@@ -135,7 +113,14 @@ docs/                   screenshots and the animated architecture page
 
 ## Team
 
-Built by **Keshara Gunathilaka** and **Akila** for the DevOps module (Semester 5). Both of us worked on the containers, the Jenkins pipeline, Terraform and Ansible. Commits were pushed from one account, so the contributor graph shows one author.
+## Team
+
+Built jointly for the DevOps module by:
+
+- **Keshara Gunathilaka**
+- **Akila Piumanthta**
+
+Both members collaborated across the whole project — containerisation, the Jenkins pipeline, Terraform, and Ansible. Commits were pushed from a single account, so the contributor graph shows one author.
 
 ## License
 
