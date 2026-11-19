@@ -505,7 +505,7 @@ There are no unit tests yet, and the smoke test is not yet a pipeline stage — 
 Built jointly for the DevOps module by:
 
 - **Keshara Gunathilaka**
-- **Akila Piumanthta**
+- **Akila Piumantha**
 
 ## License
 
